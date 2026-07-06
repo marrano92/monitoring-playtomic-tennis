@@ -28,10 +28,31 @@ DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 
 
-def http_get(url):
-    req = urllib.request.Request(url, headers=HEADERS)
+def http_get(url, extra_headers=None):
+    headers = dict(HEADERS)
+    headers.update(extra_headers or {})
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode()
+
+
+def playtomic_login():
+    """Return a bearer token for the member view, or None for anonymous mode."""
+    email = os.environ.get("PLAYTOMIC_EMAIL")
+    password = os.environ.get("PLAYTOMIC_PASSWORD")
+    if not (email and password):
+        print("info: PLAYTOMIC_EMAIL/PLAYTOMIC_PASSWORD not set, anonymous mode", file=sys.stderr)
+        return None
+    try:
+        req = urllib.request.Request(
+            "https://api.playtomic.io/v3/auth/login",
+            data=json.dumps({"email": email, "password": password}).encode(),
+            headers={**HEADERS, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)["access_token"]
+    except Exception as e:  # ponytail: on any login trouble, degrade to anonymous
+        print(f"warn: playtomic login failed, falling back to anonymous: {e}", file=sys.stderr)
+        return None
 
 
 def load_config():
@@ -53,14 +74,29 @@ def court_names(cfg):
         return {}
 
 
-def fetch_day(cfg, day):
-    """Return [(resource_id, local_start_datetime, duration_min, price)] for one day."""
-    qs = urllib.parse.urlencode({
-        "tenant_id": cfg["tenant_id"],
-        "date": day.isoformat(),
-        "sport_id": cfg["sport_id"],
-    })
-    data = json.loads(http_get(f"https://playtomic.com/api/clubs/availability?{qs}"))
+def fetch_day(cfg, day, token=None):
+    """Return [(resource_id, local_start_datetime, duration_min, price)] for one day.
+
+    With a token, uses the authenticated API (user_id=me): members see
+    preemption days the public API does not expose yet.
+    """
+    if token:
+        qs = urllib.parse.urlencode({
+            "tenant_id": cfg["tenant_id"],
+            "sport_id": cfg["sport_id"],
+            "user_id": "me",
+            "local_start_min": f"{day.isoformat()}T00:00:00",
+            "local_start_max": f"{day.isoformat()}T23:59:59",
+        })
+        data = json.loads(http_get(f"https://api.playtomic.io/v1/availability?{qs}",
+                                   {"Authorization": f"Bearer {token}"}))
+    else:
+        qs = urllib.parse.urlencode({
+            "tenant_id": cfg["tenant_id"],
+            "date": day.isoformat(),
+            "sport_id": cfg["sport_id"],
+        })
+        data = json.loads(http_get(f"https://playtomic.com/api/clubs/availability?{qs}"))
     tz = ZoneInfo(cfg["timezone"])
     out = []
     for res in data:
@@ -82,15 +118,21 @@ def collect_matching(cfg):
     """All currently free slots matching windows/courts, keyed for dedup."""
     names = court_names(cfg)
     wanted_courts = set(cfg.get("courts") or [])
+    token = playtomic_login()
     slots = {}
     today = date.today()
     for offset in range(cfg["days_ahead"] + 1):
         day = today + timedelta(days=offset)
         try:
-            day_slots = fetch_day(cfg, day)
+            day_slots = fetch_day(cfg, day, token)
         except Exception as e:
             print(f"warn: fetch failed for {day}: {e}", file=sys.stderr)
-            continue
+            if not token:
+                continue
+            try:  # authenticated endpoint hiccup: retry the day anonymously
+                day_slots = fetch_day(cfg, day)
+            except Exception:
+                continue
         for rid, local_dt, duration, price in day_slots:
             name = names.get(rid, rid[:8])
             if wanted_courts and name not in wanted_courts:

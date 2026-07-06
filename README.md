@@ -1,9 +1,14 @@
 # Monitoring Playtomic — Club Ambrosiano Tennis
 
-Controlla ogni ~10 minuti la disponibilità dei campi su Playtomic e avvisa via
-**email** e **WhatsApp** quando si libera uno slot nelle fasce orarie che ti
-interessano. Usa l'API pubblica di Playtomic (nessuna autenticazione), zero
-dipendenze Python (solo stdlib, Python ≥ 3.9).
+Controlla ogni ~30 minuti la disponibilità dei campi su Playtomic e avvisa via
+**email**, **Telegram** e opzionalmente **WhatsApp** quando si libera uno slot
+nelle fasce orarie che ti interessano. Zero dipendenze Python (solo stdlib,
+Python ≥ 3.9).
+
+Se configuri le credenziali Playtomic (`PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD`)
+il controllo avviene **da account loggato**: vede anche i giorni in prelazione
+soci non ancora aperti al pubblico. Senza credenziali (o se il login fallisce)
+degrada automaticamente alla vista anonima pubblica.
 
 ## Cosa monitora (config.json)
 
@@ -62,10 +67,18 @@ Poi in **Settings → Secrets and variables → Actions** aggiungi:
 | `MAIL_TO` | destinatario (opzionale, default = GMAIL_USER) |
 | `TELEGRAM_BOT_TOKEN` | il token del bot da @BotFather |
 | `TELEGRAM_CHAT_ID` | il tuo chat id (vedi sopra) |
+| `PLAYTOMIC_EMAIL` | (opzionale) email account Playtomic per la vista soci |
+| `PLAYTOMIC_PASSWORD` | (opzionale) password Playtomic — inseriscila SOLO qui |
 | `CALLMEBOT_PHONE` | (opzionale) il tuo numero con prefisso, es. `+39333...` |
 | `CALLMEBOT_APIKEY` | (opzionale) la apikey ricevuta da CallMeBot |
 
-Il workflow parte da solo ogni ~10 minuti (i cron di GitHub possono ritardare
+Nota sul login Playtomic: il cron a 30 minuti è scelto apposta per tenere basso
+il volume di login automatici (~48/giorno). Non abbassarlo con le credenziali
+configurate: pattern di login più fitti da IP datacenter possono far scattare
+i sistemi anti-bot ed esporre l'account a blocchi (ed è comunque un uso non
+previsto dai ToS di Playtomic).
+
+Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →
 Run workflow**.
 
