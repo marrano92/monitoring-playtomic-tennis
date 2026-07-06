@@ -33,8 +33,14 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+          # Re-sync with remote before committing: the checked-out SHA may be
+          # stale (re-runs, pushes landed while this run was executing).
+          cp state.json /tmp/state.json
+          git fetch origin main
+          git reset --hard origin/main
+          cp /tmp/state.json state.json
           git add state.json
           if ! git diff --cached --quiet; then
             git commit -m "chore: update slot state"
-            git push
+            git push origin HEAD:main
           fi
