@@ -65,21 +65,21 @@ def load_config():
 
 
 def court_names(cfg):
-    """Map resource_id -> court name, scraped once from the club page."""
+    """Map resource_id -> court name: static map from config, refreshed live
+    from the club page when reachable (GitHub runner IPs get a 403)."""
+    names = dict(cfg.get("court_names", {}))
     try:
         html = http_get(f"https://playtomic.com/clubs/{cfg['club_slug']}")
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
             html, re.S)
         resources = json.loads(m.group(1))["props"]["pageProps"]["tenant"]["resources"]
-        out = {}
         for r in resources:
             tags = [FEATURE_LABELS_IT[f] for f in r.get("features", []) if f in FEATURE_LABELS_IT]
-            out[r["resourceId"]] = r["name"].strip() + (f" ({', '.join(tags)})" if tags else "")
-        return out
-    except Exception as e:  # ponytail: names are cosmetic, fall back to raw ids
-        print(f"warn: could not fetch court names: {e}", file=sys.stderr)
-        return {}
+            names[r["resourceId"]] = r["name"].strip() + (f" ({', '.join(tags)})" if tags else "")
+    except Exception as e:  # ponytail: names are cosmetic, static map covers it
+        print(f"warn: could not refresh court names: {e}", file=sys.stderr)
+    return names
 
 
 def fetch_day(cfg, day, token=None):
