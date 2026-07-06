@@ -19,9 +19,11 @@ dipendenze Python (solo stdlib, Python ≥ 3.9).
 
 ### 1. WhatsApp via CallMeBot (gratuito)
 
-1. Aggiungi ai contatti il numero **+34 621 331 709**
+1. Aggiungi ai contatti il numero **+34 611 01 16 37** (nome a piacere; numero
+   aggiornato su [callmebot.com](https://www.callmebot.com/blog/free-api-whatsapp-messages/))
 2. Mandagli su WhatsApp il messaggio: `I allow callmebot to send me messages`
-3. Ricevi in risposta la tua **apikey**
+3. Ricevi in risposta `API Activated for your phone number. Your APIKEY is …`
+   (se non arriva entro 2 minuti, riprova dopo 24h)
 
 ### 2. Gmail app password
 
