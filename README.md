@@ -17,13 +17,27 @@ dipendenze Python (solo stdlib, Python ≥ 3.9).
 
 ## Setup (una tantum)
 
-### 1. WhatsApp via CallMeBot (gratuito)
+### 1. Telegram (gratuito, consigliato)
+
+1. Su Telegram cerca **@BotFather** → `/newbot` → scegli nome e username del
+   bot → ricevi il **token** (formato `123456789:AAF...`)
+2. Apri la chat col tuo nuovo bot e mandagli un messaggio qualsiasi (es. `/start`)
+3. Recupera il tuo **chat_id**:
+   ```bash
+   curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | python3 -m json.tool | grep -A2 '"chat"'
+   ```
+   Il numero in `"id"` è il tuo `TELEGRAM_CHAT_ID`.
+
+### 1-bis. (Opzionale) WhatsApp via CallMeBot
 
 1. Aggiungi ai contatti il numero **+34 611 01 16 37** (nome a piacere; numero
    aggiornato su [callmebot.com](https://www.callmebot.com/blog/free-api-whatsapp-messages/))
 2. Mandagli su WhatsApp il messaggio: `I allow callmebot to send me messages`
 3. Ricevi in risposta `API Activated for your phone number. Your APIKEY is …`
    (se non arriva entro 2 minuti, riprova dopo 24h)
+
+Ogni canale è indipendente: se i suoi secrets mancano viene saltato con un
+warning, gli altri funzionano comunque.
 
 ### 2. Gmail app password
 
@@ -46,8 +60,10 @@ Poi in **Settings → Secrets and variables → Actions** aggiungi:
 | `GMAIL_USER` | il tuo indirizzo Gmail |
 | `GMAIL_APP_PASSWORD` | la app password di 16 caratteri |
 | `MAIL_TO` | destinatario (opzionale, default = GMAIL_USER) |
-| `CALLMEBOT_PHONE` | il tuo numero con prefisso, es. `+39333...` |
-| `CALLMEBOT_APIKEY` | la apikey ricevuta da CallMeBot |
+| `TELEGRAM_BOT_TOKEN` | il token del bot da @BotFather |
+| `TELEGRAM_CHAT_ID` | il tuo chat id (vedi sopra) |
+| `CALLMEBOT_PHONE` | (opzionale) il tuo numero con prefisso, es. `+39333...` |
+| `CALLMEBOT_APIKEY` | (opzionale) la apikey ricevuta da CallMeBot |
 
 Il workflow parte da solo ogni ~10 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →

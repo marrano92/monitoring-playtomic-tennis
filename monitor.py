@@ -129,6 +129,25 @@ def send_email(cfg, lines, first_date):
     print(f"email sent to {msg['To']}")
 
 
+def send_telegram(cfg, lines, first_date):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat_id):
+        print("warn: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set, skipping Telegram", file=sys.stderr)
+        return
+    link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={first_date}"
+    text = f"🎾 {cfg['club_name']} — nuovi slot:\n" + "\n".join(lines[:30])
+    if len(lines) > 30:
+        text += f"\n… e altri {len(lines) - 30}"
+    text += f"\n{link}"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage", data=data, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=30):
+        pass
+    print("telegram sent")
+
+
 def send_whatsapp(cfg, lines, first_date):
     phone = os.environ.get("CALLMEBOT_PHONE")
     apikey = os.environ.get("CALLMEBOT_APIKEY")
@@ -171,6 +190,7 @@ def main():
             print("\n".join(lines))
         else:
             send_email(cfg, lines, first_date)
+            send_telegram(cfg, lines, first_date)
             send_whatsapp(cfg, lines, first_date)
 
     if not dry_run:
