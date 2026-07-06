@@ -83,7 +83,7 @@ def court_names(cfg):
 
 
 def fetch_day(cfg, day, token=None):
-    """Return [(resource_id, local_start_datetime, duration_min, price)] for one day.
+    """Return [(resource_id, local_start_datetime, duration_min)] for one day.
 
     With a token, uses the authenticated API (user_id=me): members see
     preemption days the public API does not expose yet.
@@ -111,8 +111,7 @@ def fetch_day(cfg, day, token=None):
         for slot in res["slots"]:
             # API times are UTC; combine date+time and convert to club timezone.
             utc = datetime.fromisoformat(f"{res['start_date']}T{slot['start_time']}+00:00")
-            out.append((res["resource_id"], utc.astimezone(tz),
-                        slot["duration"], slot.get("price", "")))
+            out.append((res["resource_id"], utc.astimezone(tz), slot["duration"]))
     return out
 
 
@@ -141,23 +140,22 @@ def collect_matching(cfg):
                 day_slots = fetch_day(cfg, day)
             except Exception:
                 continue
-        for rid, local_dt, duration, price in day_slots:
+        for rid, local_dt, duration in day_slots:
             name = names.get(rid, rid[:8])
             if wanted_courts and name not in wanted_courts:
                 continue
             if not in_window(local_dt, cfg["watch_windows"]):
                 continue
             key = f"{rid}|{local_dt.isoformat()}|{duration}"
-            slots[key] = (name, local_dt, duration, price)
+            slots[key] = (name, local_dt, duration)
     return slots
 
 
 def format_lines(slots):
     ordered = sorted(slots.values(), key=lambda s: (s[1], s[0]))
     return [
-        f"{name} — {DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m %H:%M')}"
-        f" ({duration} min, {price})"
-        for name, dt, duration, price in ordered
+        f"{name} — {DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m %H:%M')} ({duration} min)"
+        for name, dt, duration in ordered
     ]
 
 
@@ -185,12 +183,11 @@ def format_telegram(cfg, slots, link, max_lines=30):
     dropped = max(0, len(ordered) - max_lines)
     parts = [f"🎾 <b>{html.escape(cfg['club_name'])}</b> — nuovi slot liberi"]
     last_day = None
-    for name, dt, duration, price in ordered[:max_lines]:
+    for name, dt, duration in ordered[:max_lines]:
         if dt.date() != last_day:
             last_day = dt.date()
             parts.append(f"\n📅 <b>{DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m')}</b>")
-        detail = f"{duration} min" + (f", {price}" if price else "")
-        parts.append(f"    <b>{dt.strftime('%H:%M')}</b> · {html.escape(name)} — {detail}")
+        parts.append(f"    <b>{dt.strftime('%H:%M')}</b> · {html.escape(name)} — {duration} min")
     if dropped:
         parts.append(f"\n… e altri {dropped} slot")
     parts.append(f'\n<a href="{link}">👉 Prenota su Playtomic</a>')
@@ -287,13 +284,13 @@ def selftest():
     # Telegram formatting: slots on two days -> two day headers, court info kept
     cfg = {"club_name": "Club Test", "club_slug": "club-test"}
     slots = {
-        "a": ("Campo 1 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60, "26 EUR"),
-        "b": ("Campo 2E (quick, singolo)", datetime(2026, 7, 7, 7, 0, tzinfo=tz), 60, ""),
+        "a": ("Campo 1 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
+        "b": ("Campo 2E (quick, singolo)", datetime(2026, 7, 7, 7, 0, tzinfo=tz), 60),
     }
     msg = format_telegram(cfg, slots, "https://example.com")
     assert msg.count("📅") == 2
     assert "Campo 2E (quick, singolo)" in msg and "<b>07:00</b>" in msg
-    assert "26 EUR" in msg and 'href="https://example.com"' in msg
+    assert "EUR" not in msg and 'href="https://example.com"' in msg
     print("selftest ok")
 
 
