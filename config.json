@@ -1,0 +1,14 @@
+{
+  "club_name": "Club Ambrosiano Tennis",
+  "club_slug": "club-ambrosiano-tennis",
+  "tenant_id": "5440b3ab-1500-4d62-8c9b-6a8b96949501",
+  "sport_id": "TENNIS",
+  "timezone": "Europe/Rome",
+  "days_ahead": 7,
+  "courts": [],
+  "watch_windows": [
+    { "days": ["mon", "tue", "wed", "thu", "fri"], "from": "18:00", "to": "21:00" },
+    { "days": ["sat", "sun"], "from": "09:00", "to": "12:00" },
+    { "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "from": "07:00", "to": "09:00" }
+  ]
+}
