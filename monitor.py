@@ -10,6 +10,7 @@ Usage:
     python3 monitor.py --dry-run   # check, print what would be sent, no state write
     python3 monitor.py --selftest  # run the window-matching self-check
 """
+import html
 import json
 import os
 import re
@@ -26,6 +27,9 @@ STATE_FILE = os.path.join(BASE, "state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+# Court features worth surfacing; "outdoor"/"double" are the norm here, skip them.
+FEATURE_LABELS_IT = {"clay": "terra", "quick": "quick", "hard": "cemento",
+                     "grass": "erba", "indoor": "coperto", "single": "singolo"}
 
 
 def http_get(url, extra_headers=None):
@@ -68,7 +72,11 @@ def court_names(cfg):
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
             html, re.S)
         resources = json.loads(m.group(1))["props"]["pageProps"]["tenant"]["resources"]
-        return {r["resourceId"]: r["name"].strip() for r in resources}
+        out = {}
+        for r in resources:
+            tags = [FEATURE_LABELS_IT[f] for f in r.get("features", []) if f in FEATURE_LABELS_IT]
+            out[r["resourceId"]] = r["name"].strip() + (f" ({', '.join(tags)})" if tags else "")
+        return out
     except Exception as e:  # ponytail: names are cosmetic, fall back to raw ids
         print(f"warn: could not fetch court names: {e}", file=sys.stderr)
         return {}
@@ -171,18 +179,35 @@ def send_email(cfg, lines, first_date):
     print(f"email sent to {msg['To']}")
 
 
-def send_telegram(cfg, lines, first_date):
+def format_telegram(cfg, slots, link, max_lines=30):
+    """HTML message grouped by day: bold hour, court name with surface info."""
+    ordered = sorted(slots.values(), key=lambda s: (s[1], s[0]))
+    dropped = max(0, len(ordered) - max_lines)
+    parts = [f"🎾 <b>{html.escape(cfg['club_name'])}</b> — nuovi slot liberi"]
+    last_day = None
+    for name, dt, duration, price in ordered[:max_lines]:
+        if dt.date() != last_day:
+            last_day = dt.date()
+            parts.append(f"\n📅 <b>{DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m')}</b>")
+        detail = f"{duration} min" + (f", {price}" if price else "")
+        parts.append(f"    <b>{dt.strftime('%H:%M')}</b> · {html.escape(name)} — {detail}")
+    if dropped:
+        parts.append(f"\n… e altri {dropped} slot")
+    parts.append(f'\n<a href="{link}">👉 Prenota su Playtomic</a>')
+    return "\n".join(parts)
+
+
+def send_telegram(cfg, slots, first_date):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not (token and chat_id):
         print("warn: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set, skipping Telegram", file=sys.stderr)
         return
     link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={first_date}"
-    text = f"🎾 {cfg['club_name']} — nuovi slot:\n" + "\n".join(lines[:30])
-    if len(lines) > 30:
-        text += f"\n… e altri {len(lines) - 30}"
-    text += f"\n{link}"
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+    text = format_telegram(cfg, slots, link)
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text,
+                                   "parse_mode": "HTML",
+                                   "disable_web_page_preview": "true"}).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage", data=data, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=30):
@@ -232,7 +257,7 @@ def main():
             print("\n".join(lines))
         else:
             send_email(cfg, lines, first_date)
-            send_telegram(cfg, lines, first_date)
+            send_telegram(cfg, new_slots, first_date)
             send_whatsapp(cfg, lines, first_date)
 
     if not dry_run:
@@ -259,6 +284,16 @@ def selftest():
     # UTC -> Rome conversion: 16:30 UTC in July = 18:30 local (DST)
     utc = datetime.fromisoformat("2026-07-06T16:30:00+00:00")
     assert in_window(utc.astimezone(tz), windows)
+    # Telegram formatting: slots on two days -> two day headers, court info kept
+    cfg = {"club_name": "Club Test", "club_slug": "club-test"}
+    slots = {
+        "a": ("Campo 1 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60, "26 EUR"),
+        "b": ("Campo 2E (quick, singolo)", datetime(2026, 7, 7, 7, 0, tzinfo=tz), 60, ""),
+    }
+    msg = format_telegram(cfg, slots, "https://example.com")
+    assert msg.count("📅") == 2
+    assert "Campo 2E (quick, singolo)" in msg and "<b>07:00</b>" in msg
+    assert "26 EUR" in msg and 'href="https://example.com"' in msg
     print("selftest ok")
 
 
