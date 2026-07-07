@@ -86,14 +86,19 @@ Run workflow**.
 
 Un secondo workflow (`playtomic-bookings`, una volta al giorno alle ~06:30
 italiane) legge le prenotazioni del tuo account Playtomic e per ogni nuova
-prenotazione manda a `MAIL_TO` un **invito calendario ICS** via Gmail: Google
-Calendar lo aggiunge automaticamente con campo, orario, club e giocatori.
-Richiede i secrets `PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD` + quelli Gmail già
-configurati; nessuna API Google da attivare.
+prenotazione manda a `MAIL_TO` una **email con markup schema.org
+(EventReservation)**: Gmail la riconosce come conferma di prenotazione e
+mostra la card con campo, orario e club proponendoti di aggiungerla al
+calendario (o la aggiunge da solo, vedi sotto). Richiede i secrets
+`PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD` + quelli Gmail già configurati;
+nessuna API Google da attivare.
 
-- Se l'evento non compare da solo, controlla in Google Calendar → Impostazioni
-  → Impostazioni evento → "Aggiungi inviti al mio calendario" (deve essere
-  "Da tutti" o "Solo se il mittente è conosciuto" — il mittente è la tua Gmail).
+- Il markup viene processato da Google **senza registrazione del mittente**
+  solo per email inviate a sé stessi: `MAIL_TO` deve essere lo stesso
+  indirizzo di `GMAIL_USER` (o non impostato, che è la stessa cosa).
+- L'aggiunta automatica dipende da Google Calendar → Impostazioni →
+  "Eventi da Gmail" → "Mostra eventi da Gmail": se attiva l'evento si crea da
+  solo, altrimenti resta la card nella mail con l'azione per aggiungerlo.
 - Le prenotazioni già inviate sono tracciate in `calendar_state.json`
   (committato dal workflow). Le cancellazioni non vengono sincronizzate:
   l'evento resta sul calendario e va tolto a mano.

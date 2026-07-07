@@ -265,51 +265,56 @@ def parse_utc(s):
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
-def ics_escape(s):
-    return (s.replace("\\", "\\\\").replace(";", "\\;")
-            .replace(",", "\\,").replace("\n", "\\n"))
+def build_event_email(mid, start, end, summary, location, description):
+    """(text, html) email bodies with schema.org EventReservation JSON-LD.
+
+    Gmail parses the markup on arrival and shows an event card with an
+    add-to-calendar action; self-sent mail is processed without Google
+    sender registration. Times must be local ISO with UTC offset.
+    """
+    ld = {
+        "@context": "http://schema.org",
+        "@type": "EventReservation",
+        "reservationNumber": mid,
+        "reservationStatus": "http://schema.org/Confirmed",
+        "underName": {"@type": "Person", "name": "Playtomic"},
+        "reservationFor": {
+            "@type": "Event",
+            "name": summary,
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "location": {"@type": "Place", "name": location,
+                         "address": location},
+        },
+    }
+    nl2br = html.escape(description).replace("\n", "<br>")
+    body = (
+        f'<html><head><script type="application/ld+json">{json.dumps(ld)}'
+        "</script></head><body>"
+        f"<p><b>{html.escape(summary)}</b><br>"
+        f"{start:%d/%m/%Y %H:%M}–{end:%H:%M}</p>"
+        f"<p>{nl2br}</p><p>{html.escape(location)}</p>"
+        "</body></html>")
+    text = f"{summary}\n{start:%d/%m/%Y %H:%M}–{end:%H:%M}\n{description}\n{location}"
+    return text, body
 
 
-def build_ics(uid, start, end, summary, location, description, organizer, attendee):
-    """Minimal METHOD:REQUEST invite; Google Calendar auto-adds it on delivery."""
-    fmt = "%Y%m%dT%H%M%SZ"
-    return "\r\n".join([
-        "BEGIN:VCALENDAR",
-        "PRODID:-//playtomic-monitor//IT",
-        "VERSION:2.0",
-        "METHOD:REQUEST",
-        "BEGIN:VEVENT",
-        f"UID:{uid}@playtomic-monitor",
-        f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}",
-        f"DTSTART:{start.strftime(fmt)}",
-        f"DTEND:{end.strftime(fmt)}",
-        f"SUMMARY:{ics_escape(summary)}",
-        f"LOCATION:{ics_escape(location)}",
-        f"DESCRIPTION:{ics_escape(description)}",
-        f"ORGANIZER;CN=Playtomic Monitor:mailto:{organizer}",
-        f"ATTENDEE;PARTSTAT=ACCEPTED;CN={attendee}:mailto:{attendee}",
-        "STATUS:CONFIRMED",
-        "END:VEVENT",
-        "END:VCALENDAR",
-    ])
-
-
-def send_calendar_invite(subject, ics):
+def send_event_email(subject, text, body):
     user = os.environ.get("GMAIL_USER")
     pwd = os.environ.get("GMAIL_APP_PASSWORD")
     if not (user and pwd):
-        print("warn: GMAIL_USER/GMAIL_APP_PASSWORD not set, skipping invite", file=sys.stderr)
+        print("warn: GMAIL_USER/GMAIL_APP_PASSWORD not set, skipping event email", file=sys.stderr)
         return False
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = user
     msg["To"] = os.environ.get("MAIL_TO", user)
-    msg.set_content(ics, subtype="calendar")
-    msg.set_param("method", "REQUEST")
+    msg.set_content(text)
+    msg.add_alternative(body, subtype="html")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(user, pwd)
         smtp.send_message(msg)
-    print(f"calendar invite sent: {subject}")
+    print(f"event email sent: {subject}")
     return True
 
 
@@ -319,8 +324,6 @@ def sync_bookings(cfg, dry_run):
         sys.exit("error: --sync-bookings requires PLAYTOMIC_EMAIL/PLAYTOMIC_PASSWORD")
     names = court_names(cfg)
     tz = ZoneInfo(cfg["timezone"])
-    organizer = os.environ.get("GMAIL_USER", "")
-    attendee = os.environ.get("MAIL_TO", organizer)
     try:
         with open(CAL_STATE_FILE) as f:
             synced = set(json.load(f))
@@ -360,12 +363,13 @@ def sync_bookings(cfg, dry_run):
             f"Giocatori: {players}" if players else "",
         ]))
         summary = f"🎾 {club}" + (f" — {court}" if court else "")
-        local = start.astimezone(tz)
+        local_start, local_end = start.astimezone(tz), end.astimezone(tz)
         if dry_run:
-            print(f"dry-run, would invite: {summary} · {local:%a %d/%m %H:%M}")
+            print(f"dry-run, would send: {summary} · {local_start:%a %d/%m %H:%M}")
             continue
-        ics = build_ics(mid, start, end, summary, location, description, organizer, attendee)
-        if send_calendar_invite(f"Prenotazione: {club} {local:%d/%m %H:%M}", ics):
+        text, body = build_event_email(mid, local_start, local_end,
+                                       summary, location, description)
+        if send_event_email(f"Prenotazione: {club} {local_start:%d/%m %H:%M}", text, body):
             synced.add(mid)
             sent += 1
     print(f"{sent} calendar invite(s) sent "
@@ -439,14 +443,16 @@ def selftest():
     assert msg.count("📅") == 2
     assert "Campo 2E (quick, singolo)" in msg and "<b>07:00</b>" in msg
     assert "EUR" not in msg and 'href="https://example.com"' in msg
-    # ICS invite: UTC times pass through, commas escaped, method present
-    ics = build_ics("m1", datetime(2026, 7, 8, 16, 0, tzinfo=timezone.utc),
-                    datetime(2026, 7, 8, 17, 30, tzinfo=timezone.utc),
-                    "🎾 Club — Campo 2E (quick, singolo)", "Club, Milano",
-                    "Giocatori: A, B", "me@example.com", "me@example.com")
-    assert "DTSTART:20260708T160000Z" in ics and "DTEND:20260708T173000Z" in ics
-    assert "UID:m1@playtomic-monitor" in ics and "METHOD:REQUEST" in ics
-    assert "LOCATION:Club\\, Milano" in ics
+    # event email: JSON-LD parses back, local times keep their UTC offset
+    text, body = build_event_email(
+        "m1", datetime(2026, 7, 8, 18, 0, tzinfo=tz), datetime(2026, 7, 8, 19, 30, tzinfo=tz),
+        "🎾 Club — Campo 2E (quick, singolo)", "Club, Milano", "Giocatori: A & B")
+    ld = json.loads(re.search(
+        r'<script type="application/ld\+json">(.*?)</script>', body, re.S).group(1))
+    assert ld["@type"] == "EventReservation" and ld["reservationNumber"] == "m1"
+    assert ld["reservationFor"]["startDate"] == "2026-07-08T18:00:00+02:00"
+    assert ld["reservationFor"]["endDate"] == "2026-07-08T19:30:00+02:00"
+    assert "Giocatori: A &amp; B" in body and "Giocatori: A & B" in text
     # naive API timestamps are UTC; aware ones are normalized to UTC
     assert parse_utc("2026-07-08T16:00:00") == parse_utc("2026-07-08T18:00:00+02:00")
     print("selftest ok")
