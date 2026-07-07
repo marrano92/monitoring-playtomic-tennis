@@ -233,17 +233,31 @@ def send_whatsapp(cfg, lines, first_date):
 
 
 def fetch_bookings(auth):
-    """Upcoming matches (= court bookings) of the logged-in user, all clubs."""
-    qs = urllib.parse.urlencode({
-        "user_id": auth.get("user_id", "me"),
-        "sort": "start_date,ASC",
-        "size": "50",
-    })
-    data = json.loads(http_get(f"https://api.playtomic.io/v1/matches?{qs}",
-                               {"Authorization": f"Bearer {auth['access_token']}"}))
-    if isinstance(data, dict):  # ponytail: tolerate a paginated {content: []} wrapper
-        data = data.get("matches") or data.get("content") or []
-    return data
+    """Upcoming matches (= court bookings) of the logged-in user, all clubs.
+
+    DESC sort keeps future bookings on page 0 even for accounts with a long
+    match history. user_id is the documented-by-scrapers filter; owner_id is
+    a fallback in case the first is accepted but ignored.
+    """
+    uid = auth.get("user_id", "me")
+    for param in ("user_id", "owner_id"):
+        qs = urllib.parse.urlencode({param: uid, "sort": "start_date,DESC", "size": "50"})
+        try:
+            data = json.loads(http_get(f"https://api.playtomic.io/v1/matches?{qs}",
+                                       {"Authorization": f"Bearer {auth['access_token']}"}))
+        except Exception as e:
+            print(f"warn: matches fetch with {param} failed: {e}", file=sys.stderr)
+            continue
+        if isinstance(data, dict):  # ponytail: tolerate a paginated {content: []} wrapper
+            keys = list(data)
+            data = data.get("matches") or data.get("content") or []
+            if not data:
+                print(f"warn: unexpected matches payload, keys={keys}", file=sys.stderr)
+        if data:
+            print(f"{len(data)} match(es) fetched via {param}")
+            return data
+        print(f"info: 0 matches via {param}", file=sys.stderr)
+    return []
 
 
 def parse_utc(s):
@@ -314,13 +328,23 @@ def sync_bookings(cfg, dry_run):
         synced = set()
     now = datetime.now(timezone.utc)
     sent = 0
+    skipped = {"past": 0, "canceled": 0, "synced": 0}
     for m in fetch_bookings(auth):
         mid = m.get("match_id") or m.get("id")
         if not mid or (m.get("status") or "").upper().startswith("CANCEL"):
+            skipped["canceled"] += 1
             continue
         start = parse_utc(m["start_date"])
-        if start < now or mid in synced:
+        if start < now:
+            skipped["past"] += 1
             continue
+        if mid in synced:
+            skipped["synced"] += 1
+            continue
+        if sent >= 10:  # ponytail: safety cap — a run should never invite 10+ bookings
+            print("warn: invite cap (10) reached, remaining bookings deferred to next run",
+                  file=sys.stderr)
+            break
         end = parse_utc(m["end_date"]) if m.get("end_date") else start + timedelta(minutes=90)
         tenant = m.get("tenant") or {}
         club = tenant.get("tenant_name") or cfg["club_name"]
@@ -344,7 +368,9 @@ def sync_bookings(cfg, dry_run):
         if send_calendar_invite(f"Prenotazione: {club} {local:%d/%m %H:%M}", ics):
             synced.add(mid)
             sent += 1
-    print(f"{sent} calendar invite(s) sent")
+    print(f"{sent} calendar invite(s) sent "
+          f"({skipped['past']} past, {skipped['canceled']} canceled/invalid, "
+          f"{skipped['synced']} already synced)")
     if not dry_run:
         # ponytail: synced ids are never pruned — a handful of ids per week, harmless
         with open(CAL_STATE_FILE, "w") as f:
