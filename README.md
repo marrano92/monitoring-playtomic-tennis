@@ -82,11 +82,28 @@ Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →
 Run workflow**.
 
+## Prenotazioni → Google Calendar
+
+Un secondo workflow (`playtomic-bookings`, una volta al giorno alle ~06:30
+italiane) legge le prenotazioni del tuo account Playtomic e per ogni nuova
+prenotazione manda a `MAIL_TO` un **invito calendario ICS** via Gmail: Google
+Calendar lo aggiunge automaticamente con campo, orario, club e giocatori.
+Richiede i secrets `PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD` + quelli Gmail già
+configurati; nessuna API Google da attivare.
+
+- Se l'evento non compare da solo, controlla in Google Calendar → Impostazioni
+  → Impostazioni evento → "Aggiungi inviti al mio calendario" (deve essere
+  "Da tutti" o "Solo se il mittente è conosciuto" — il mittente è la tua Gmail).
+- Le prenotazioni già inviate sono tracciate in `calendar_state.json`
+  (committato dal workflow). Le cancellazioni non vengono sincronizzate:
+  l'evento resta sul calendario e va tolto a mano.
+
 ## Test in locale
 
 ```bash
-python3 monitor.py --selftest   # verifica la logica delle fasce orarie
-python3 monitor.py --dry-run    # interroga l'API e stampa cosa notificherebbe
+python3 monitor.py --selftest              # verifica fasce orarie + formato ICS
+python3 monitor.py --dry-run               # interroga l'API e stampa cosa notificherebbe
+python3 monitor.py --sync-bookings --dry-run  # stampa le prenotazioni che invierebbe
 ```
 
 ## Note
