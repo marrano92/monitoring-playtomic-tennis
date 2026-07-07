@@ -82,33 +82,11 @@ Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →
 Run workflow**.
 
-## Prenotazioni → Google Calendar
-
-Un secondo workflow (`playtomic-bookings`, una volta al giorno alle ~06:30
-italiane) legge le prenotazioni del tuo account Playtomic e per ogni nuova
-prenotazione manda a `MAIL_TO` una **email con markup schema.org
-(EventReservation)**: Gmail la riconosce come conferma di prenotazione e
-mostra la card con campo, orario e club proponendoti di aggiungerla al
-calendario (o la aggiunge da solo, vedi sotto). Richiede i secrets
-`PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD` + quelli Gmail già configurati;
-nessuna API Google da attivare.
-
-- Il markup viene processato da Google **senza registrazione del mittente**
-  solo per email inviate a sé stessi: `MAIL_TO` deve essere lo stesso
-  indirizzo di `GMAIL_USER` (o non impostato, che è la stessa cosa).
-- L'aggiunta automatica dipende da Google Calendar → Impostazioni →
-  "Eventi da Gmail" → "Mostra eventi da Gmail": se attiva l'evento si crea da
-  solo, altrimenti resta la card nella mail con l'azione per aggiungerlo.
-- Le prenotazioni già inviate sono tracciate in `calendar_state.json`
-  (committato dal workflow). Le cancellazioni non vengono sincronizzate:
-  l'evento resta sul calendario e va tolto a mano.
-
 ## Test in locale
 
 ```bash
-python3 monitor.py --selftest              # verifica fasce orarie + formato ICS
-python3 monitor.py --dry-run               # interroga l'API e stampa cosa notificherebbe
-python3 monitor.py --sync-bookings --dry-run  # stampa le prenotazioni che invierebbe
+python3 monitor.py --selftest   # verifica la logica delle fasce orarie
+python3 monitor.py --dry-run    # interroga l'API e stampa cosa notificherebbe
 ```
 
 ## Note

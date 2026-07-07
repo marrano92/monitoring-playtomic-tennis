@@ -6,10 +6,9 @@ WhatsApp (CallMeBot) notification when a slot matching the watch windows in
 config.json becomes available.
 
 Usage:
-    python3 monitor.py                  # check and notify
-    python3 monitor.py --dry-run        # check, print what would be sent, no state write
-    python3 monitor.py --sync-bookings  # add my Playtomic bookings to Google Calendar
-    python3 monitor.py --selftest       # run the self-checks
+    python3 monitor.py             # check and notify
+    python3 monitor.py --dry-run   # check, print what would be sent, no state write
+    python3 monitor.py --selftest  # run the window-matching self-check
 """
 import html
 import json
@@ -19,13 +18,12 @@ import smtplib
 import sys
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "state.json")
-CAL_STATE_FILE = os.path.join(BASE, "calendar_state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
@@ -43,7 +41,7 @@ def http_get(url, extra_headers=None):
 
 
 def playtomic_login():
-    """Return the auth response (access_token, user_id, ...) or None for anonymous mode."""
+    """Return a bearer token for the member view, or None for anonymous mode."""
     email = os.environ.get("PLAYTOMIC_EMAIL")
     password = os.environ.get("PLAYTOMIC_PASSWORD")
     if not (email and password):
@@ -55,7 +53,7 @@ def playtomic_login():
             data=json.dumps({"email": email, "password": password}).encode(),
             headers={**HEADERS, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp)
+            return json.load(resp)["access_token"]
     except Exception as e:  # ponytail: on any login trouble, degrade to anonymous
         print(f"warn: playtomic login failed, falling back to anonymous: {e}", file=sys.stderr)
         return None
@@ -127,8 +125,7 @@ def collect_matching(cfg):
     """All currently free slots matching windows/courts, keyed for dedup."""
     names = court_names(cfg)
     wanted_courts = set(cfg.get("courts") or [])
-    auth = playtomic_login()
-    token = auth["access_token"] if auth else None
+    token = playtomic_login()
     slots = {}
     today = date.today()
     for offset in range(cfg["days_ahead"] + 1):
@@ -232,155 +229,6 @@ def send_whatsapp(cfg, lines, first_date):
     print(f"whatsapp sent to {phone}")
 
 
-def fetch_bookings(auth):
-    """Upcoming matches (= court bookings) of the logged-in user, all clubs.
-
-    DESC sort keeps future bookings on page 0 even for accounts with a long
-    match history. user_id is the documented-by-scrapers filter; owner_id is
-    a fallback in case the first is accepted but ignored.
-    """
-    uid = auth.get("user_id", "me")
-    for param in ("user_id", "owner_id"):
-        qs = urllib.parse.urlencode({param: uid, "sort": "start_date,DESC", "size": "50"})
-        try:
-            data = json.loads(http_get(f"https://api.playtomic.io/v1/matches?{qs}",
-                                       {"Authorization": f"Bearer {auth['access_token']}"}))
-        except Exception as e:
-            print(f"warn: matches fetch with {param} failed: {e}", file=sys.stderr)
-            continue
-        if isinstance(data, dict):  # ponytail: tolerate a paginated {content: []} wrapper
-            keys = list(data)
-            data = data.get("matches") or data.get("content") or []
-            if not data:
-                print(f"warn: unexpected matches payload, keys={keys}", file=sys.stderr)
-        if data:
-            print(f"{len(data)} match(es) fetched via {param}")
-            return data
-        print(f"info: 0 matches via {param}", file=sys.stderr)
-    return []
-
-
-def parse_utc(s):
-    dt = datetime.fromisoformat(s)
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-
-
-def build_event_email(mid, start, end, summary, location, description):
-    """(text, html) email bodies with schema.org EventReservation JSON-LD.
-
-    Gmail parses the markup on arrival and shows an event card with an
-    add-to-calendar action; self-sent mail is processed without Google
-    sender registration. Times must be local ISO with UTC offset.
-    """
-    ld = {
-        "@context": "http://schema.org",
-        "@type": "EventReservation",
-        "reservationNumber": mid,
-        "reservationStatus": "http://schema.org/Confirmed",
-        "underName": {"@type": "Person", "name": "Playtomic"},
-        "reservationFor": {
-            "@type": "Event",
-            "name": summary,
-            "startDate": start.isoformat(),
-            "endDate": end.isoformat(),
-            "location": {"@type": "Place", "name": location,
-                         "address": location},
-        },
-    }
-    nl2br = html.escape(description).replace("\n", "<br>")
-    body = (
-        f'<html><head><script type="application/ld+json">{json.dumps(ld)}'
-        "</script></head><body>"
-        f"<p><b>{html.escape(summary)}</b><br>"
-        f"{start:%d/%m/%Y %H:%M}–{end:%H:%M}</p>"
-        f"<p>{nl2br}</p><p>{html.escape(location)}</p>"
-        "</body></html>")
-    text = f"{summary}\n{start:%d/%m/%Y %H:%M}–{end:%H:%M}\n{description}\n{location}"
-    return text, body
-
-
-def send_event_email(subject, text, body):
-    user = os.environ.get("GMAIL_USER")
-    pwd = os.environ.get("GMAIL_APP_PASSWORD")
-    if not (user and pwd):
-        print("warn: GMAIL_USER/GMAIL_APP_PASSWORD not set, skipping event email", file=sys.stderr)
-        return False
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = user
-    msg["To"] = os.environ.get("MAIL_TO", user)
-    msg.set_content(text)
-    msg.add_alternative(body, subtype="html")
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, pwd)
-        smtp.send_message(msg)
-    print(f"event email sent: {subject}")
-    return True
-
-
-def sync_bookings(cfg, dry_run):
-    auth = playtomic_login()
-    if not auth:
-        sys.exit("error: --sync-bookings requires PLAYTOMIC_EMAIL/PLAYTOMIC_PASSWORD")
-    names = court_names(cfg)
-    tz = ZoneInfo(cfg["timezone"])
-    try:
-        with open(CAL_STATE_FILE) as f:
-            synced = set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        synced = set()
-    now = datetime.now(timezone.utc)
-    sent = 0
-    skipped = {"past": 0, "canceled": 0, "synced": 0}
-    for m in fetch_bookings(auth):
-        mid = m.get("match_id") or m.get("id")
-        if not mid or (m.get("status") or "").upper().startswith("CANCEL"):
-            skipped["canceled"] += 1
-            continue
-        start = parse_utc(m["start_date"])
-        if start < now:
-            skipped["past"] += 1
-            continue
-        if mid in synced:
-            skipped["synced"] += 1
-            continue
-        if sent >= 10:  # ponytail: safety cap — a run should never invite 10+ bookings
-            print("warn: invite cap (10) reached, remaining bookings deferred to next run",
-                  file=sys.stderr)
-            break
-        end = parse_utc(m["end_date"]) if m.get("end_date") else start + timedelta(minutes=90)
-        tenant = m.get("tenant") or {}
-        club = tenant.get("tenant_name") or cfg["club_name"]
-        court = names.get(m.get("resource_id"), "")
-        addr = tenant.get("address") or {}
-        location = ", ".join(filter(None, [club, addr.get("street"), addr.get("city")]))
-        players = ", ".join(
-            p.get("name", "") for t in m.get("teams") or []
-            for p in t.get("players") or [] if p.get("name"))
-        description = "\n".join(filter(None, [
-            f"Campo prenotato su Playtomic ({int((end - start).total_seconds() // 60)} min)",
-            f"Campo: {court}" if court else "",
-            f"Giocatori: {players}" if players else "",
-        ]))
-        summary = f"🎾 {club}" + (f" — {court}" if court else "")
-        local_start, local_end = start.astimezone(tz), end.astimezone(tz)
-        if dry_run:
-            print(f"dry-run, would send: {summary} · {local_start:%a %d/%m %H:%M}")
-            continue
-        text, body = build_event_email(mid, local_start, local_end,
-                                       summary, location, description)
-        if send_event_email(f"Prenotazione: {club} {local_start:%d/%m %H:%M}", text, body):
-            synced.add(mid)
-            sent += 1
-    print(f"{sent} calendar invite(s) sent "
-          f"({skipped['past']} past, {skipped['canceled']} canceled/invalid, "
-          f"{skipped['synced']} already synced)")
-    if not dry_run:
-        # ponytail: synced ids are never pruned — a handful of ids per week, harmless
-        with open(CAL_STATE_FILE, "w") as f:
-            json.dump(sorted(synced), f, indent=1)
-
-
 def load_state():
     try:
         with open(STATE_FILE) as f:
@@ -443,25 +291,11 @@ def selftest():
     assert msg.count("📅") == 2
     assert "Campo 2E (quick, singolo)" in msg and "<b>07:00</b>" in msg
     assert "EUR" not in msg and 'href="https://example.com"' in msg
-    # event email: JSON-LD parses back, local times keep their UTC offset
-    text, body = build_event_email(
-        "m1", datetime(2026, 7, 8, 18, 0, tzinfo=tz), datetime(2026, 7, 8, 19, 30, tzinfo=tz),
-        "🎾 Club — Campo 2E (quick, singolo)", "Club, Milano", "Giocatori: A & B")
-    ld = json.loads(re.search(
-        r'<script type="application/ld\+json">(.*?)</script>', body, re.S).group(1))
-    assert ld["@type"] == "EventReservation" and ld["reservationNumber"] == "m1"
-    assert ld["reservationFor"]["startDate"] == "2026-07-08T18:00:00+02:00"
-    assert ld["reservationFor"]["endDate"] == "2026-07-08T19:30:00+02:00"
-    assert "Giocatori: A &amp; B" in body and "Giocatori: A & B" in text
-    # naive API timestamps are UTC; aware ones are normalized to UTC
-    assert parse_utc("2026-07-08T16:00:00") == parse_utc("2026-07-08T18:00:00+02:00")
     print("selftest ok")
 
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
-    elif "--sync-bookings" in sys.argv:
-        sync_bookings(load_config(), "--dry-run" in sys.argv)
     else:
         main()
