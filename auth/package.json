@@ -1,0 +1,9 @@
+{
+  "name": "playtomic-auth",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless refresh of the Playtomic member session token",
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}

@@ -5,15 +5,16 @@ Controlla ogni ~30 minuti la disponibilità dei campi su Playtomic e avvisa via
 nelle fasce orarie che ti interessano. Zero dipendenze Python (solo stdlib,
 Python ≥ 3.9).
 
-Il controllo usa la vista anonima pubblica di `playtomic.com`. La vista soci via
-login (`api.playtomic.io`) è attualmente **non disponibile**: quell'API risponde
-403 a qualunque client non ufficiale, quindi il monitor degrada sempre alla
-vista pubblica (che espone comunque gli stessi slot prenotabili).
+Il controllo usa la vista pubblica di `playtomic.com`, che espone solo i prossimi
+**~3 giorni**. Con una sessione **soci** (cookie `pt_auth_access_token`) lo stesso
+endpoint restituisce **~10 giorni**: il monitor la ottiene rinnovando il token in
+un **browser headless** ad ogni run (vedi §5, opzionale). Senza sessione soci
+degrada in automatico alla vista pubblica, senza errori.
 
 > **Perché serve il relay Cloudflare.** Da ~luglio 2026 la CloudFront WAF di
 > Playtomic risponde **403** agli IP datacenter dei runner GitHub. Gli endpoint
 > pubblici funzionano solo da IP residenziali / non-datacenter. Il monitor
-> instrada quindi le due GET pubbliche attraverso un **Cloudflare Worker relay**
+> instrada quindi la GET di disponibilità attraverso un **Cloudflare Worker relay**
 > (`PLAYTOMIC_BASE`), il cui IP egress non è bloccato. Vedi `relay/` e il §4.
 
 ## Cosa monitora (config.json)
@@ -74,8 +75,9 @@ Poi in **Settings → Secrets and variables → Actions** aggiungi:
 | `TELEGRAM_BOT_TOKEN` | il token del bot da @BotFather |
 | `TELEGRAM_CHAT_ID` | il tuo chat id (vedi sopra) |
 | `PLAYTOMIC_RELAY_TOKEN` | token condiviso del relay Worker (vedi §4) |
-| `PLAYTOMIC_EMAIL` | (opzionale, oggi inutile) email account Playtomic |
-| `PLAYTOMIC_PASSWORD` | (opzionale, oggi inutile) password Playtomic |
+| `PLAYTOMIC_REFRESH_TOKEN` | (opzionale, vista soci) refresh token della sessione — vedi §5 |
+| `GH_PAT` | (solo con §5) PAT fine-grained con *Secrets: write* su questo repo — vedi §5 |
+| `PLAYTOMIC_COOKIE` | (opzionale) cookie soci manuale `pt_auth_access_token=…`, fallback della vista soci |
 | `CALLMEBOT_PHONE` | (opzionale) il tuo numero con prefisso, es. `+39333...` |
 | `CALLMEBOT_APIKEY` | (opzionale) la apikey ricevuta da CallMeBot |
 
@@ -96,13 +98,42 @@ Poi:
 1. Metti l'URL del Worker in `PLAYTOMIC_BASE` nel workflow (`.github/workflows/monitor.yml`).
 2. Aggiungi lo **stesso** token del punto sopra come secret GitHub `PLAYTOMIC_RELAY_TOKEN`.
 
-Il Worker inoltra solo i path `/api/clubs/availability` e `/clubs/` e richiede il
-token via header `X-Relay-Token`, così l'URL pubblico non è un proxy aperto.
-In locale non serve: senza `PLAYTOMIC_BASE` il monitor va diretto a `playtomic.com`.
+Il Worker inoltra solo il path `/api/clubs/availability` (con l'eventuale header
+`Cookie` per la vista soci) e richiede il token via header `X-Relay-Token`, così
+l'URL pubblico non è un proxy aperto. In locale non serve: senza `PLAYTOMIC_BASE`
+il monitor va diretto a `playtomic.com`.
 
 Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →
 Run workflow**.
+
+### 5. (Opzionale) Vista soci: refresh headless del token
+
+La vista pubblica mostra ~3 giorni; quella soci ~10. Per attivarla il workflow
+rinnova il token di sessione in un **Chromium headless** (Playwright) ad ogni run
+— il refresh gira come JS su `app.playtomic.com/refresh`, quindi non è replicabile
+con una semplice HTTP/relay. Playtomic **ruota** il refresh token ad ogni uso, così
+il workflow **cattura quello nuovo e lo riscrive nel secret** (mai in git: il repo
+è pubblico).
+
+Setup:
+
+1. **Refresh token**: fai login su `playtomic.com` nel browser → DevTools →
+   Application → Cookies → copia il valore di **`pt_auth_refresh_token`**. Mettilo
+   nel secret `PLAYTOMIC_REFRESH_TOKEN`.
+2. **PAT per ripersistere il token ruotato**: crea un
+   [fine-grained PAT](https://github.com/settings/tokens?type=beta) limitato a
+   **questo solo repo**, permesso **Secrets: Read and write**. Mettilo nel secret
+   `GH_PAT`.
+
+Note operative:
+
+- Il costo è ~30–60s a run per Chromium (browser in cache dopo il primo run).
+- Se lo step di refresh fallisce (token invalidato, logout altrove, challenge
+  anti-bot), il monitor **degrada alla vista pubblica** senza rompersi; basta
+  reincollare un `pt_auth_refresh_token` fresco nel secret per riattivarlo.
+- In alternativa al refresh automatico, puoi impostare solo `PLAYTOMIC_COOKIE`
+  (`pt_auth_access_token=…`) a mano: dà la vista soci per ~1 h, poi va reincollato.
 
 ## Test in locale
 

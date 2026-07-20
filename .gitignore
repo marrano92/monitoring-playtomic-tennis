@@ -2,3 +2,5 @@ __pycache__/
 .env
 .wrangler/
 relay/.dev.vars
+node_modules/
+auth/package-lock.json

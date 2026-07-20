@@ -18,14 +18,61 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # --- Member session: refresh the access token in a real headless browser.
+      # The refresh runs client-side JS on app.playtomic.com/refresh, which plain
+      # HTTP clients / the relay can't execute. Playtomic rotates the refresh token
+      # on use, so we capture the new one and persist it back into the secret.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('auth/package.json') }}
+
+      - name: Install auth deps
+        working-directory: auth
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Refresh member session
+        id: refresh
+        continue-on-error: true
+        working-directory: auth
+        run: node refresh.js
+        env:
+          PLAYTOMIC_REFRESH_TOKEN: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN }}
+
+      # Persist the rotated refresh token into the secret (never into git: the repo
+      # is public). Needs GH_PAT: a fine-grained PAT with Secrets:write on this repo.
+      - name: Persist rotated refresh token
+        if: steps.refresh.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f "$RUNNER_TEMP/pt_refresh" ]; then
+            gh secret set PLAYTOMIC_REFRESH_TOKEN --body "$(cat "$RUNNER_TEMP/pt_refresh")"
+            echo "rotated refresh token persisted"
+          else
+            echo "no new refresh token captured this run"
+          fi
+
       - name: Check availability
-        run: python3 monitor.py
+        run: |
+          # Prefer the freshly refreshed member cookie; fall back to the manual
+          # PLAYTOMIC_COOKIE secret (if set), else anonymous view.
+          if [ -f "$RUNNER_TEMP/pt_cookie" ]; then
+            export PLAYTOMIC_COOKIE="$(cat "$RUNNER_TEMP/pt_cookie")"
+          fi
+          python3 monitor.py
         env:
           # playtomic.com 403s GitHub datacenter IPs; route public GETs via the relay Worker.
           PLAYTOMIC_BASE: https://playtomic-relay.andrea-marrano921093.workers.dev
           PLAYTOMIC_RELAY_TOKEN: ${{ secrets.PLAYTOMIC_RELAY_TOKEN }}
-          PLAYTOMIC_EMAIL: ${{ secrets.PLAYTOMIC_EMAIL }}
-          PLAYTOMIC_PASSWORD: ${{ secrets.PLAYTOMIC_PASSWORD }}
+          PLAYTOMIC_COOKIE: ${{ secrets.PLAYTOMIC_COOKIE }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}

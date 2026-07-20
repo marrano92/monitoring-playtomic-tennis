@@ -26,18 +26,21 @@ STATE_FILE = os.path.join(BASE, "state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-# Playtomic's CloudFront WAF 403s datacenter IPs (GitHub runners) and even plain
-# non-browser clients; PLAYTOMIC_BASE routes requests through a Cloudflare Worker
-# relay (its egress clears the WAF) when set. Booking links stay on playtomic.com
-# (opened from the user's own browser).
-_DEFAULT_BASE = "https://playtomic.com"
-PLAYTOMIC_BASE = os.environ.get("PLAYTOMIC_BASE", _DEFAULT_BASE).rstrip("/")
+# playtomic.com's CloudFront WAF 403s datacenter IPs (GitHub runners) and even
+# plain non-browser clients; PLAYTOMIC_BASE routes the availability GET through a
+# Cloudflare Worker relay (its egress clears that WAF) when set. Booking links
+# stay on playtomic.com (opened from the user's own browser).
+PLAYTOMIC_BASE = os.environ.get("PLAYTOMIC_BASE", "https://playtomic.com").rstrip("/")
 _RELAY_TOKEN = os.environ.get("PLAYTOMIC_RELAY_TOKEN")
 RELAY_HEADERS = {"X-Relay-Token": _RELAY_TOKEN} if _RELAY_TOKEN else {}
-# Auth + member availability live on api.playtomic.io. When the relay is
-# configured it proxies that host too (same path prefixes), so route through
-# PLAYTOMIC_BASE; otherwise (local dev) hit api.playtomic.io directly.
-API_BASE = PLAYTOMIC_BASE if PLAYTOMIC_BASE != _DEFAULT_BASE else "https://api.playtomic.io"
+# Optional logged-in cookie ("pt_auth_access_token=..."). The same public
+# availability endpoint returns the member view — free slots ~10 days out vs ~3
+# anonymous — when this cookie rides along. Playtomic access tokens live ~1h and
+# can only be refreshed via api.playtomic.io (which WAF-blocks the relay too), so
+# this is a manual top-up: paste a fresh cookie when actively hunting. An expired
+# or absent cookie just yields the anonymous view (HTTP 200, no error), so it
+# degrades safely on its own.
+PLAYTOMIC_COOKIE = os.environ.get("PLAYTOMIC_COOKIE")
 
 
 def http_get(url, extra_headers=None):
@@ -46,25 +49,6 @@ def http_get(url, extra_headers=None):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode()
-
-
-def playtomic_login():
-    """Return a bearer token for the member view, or None for anonymous mode."""
-    email = os.environ.get("PLAYTOMIC_EMAIL")
-    password = os.environ.get("PLAYTOMIC_PASSWORD")
-    if not (email and password):
-        print("info: PLAYTOMIC_EMAIL/PLAYTOMIC_PASSWORD not set, anonymous mode", file=sys.stderr)
-        return None
-    try:
-        req = urllib.request.Request(
-            f"{API_BASE}/v3/auth/login",
-            data=json.dumps({"email": email, "password": password}).encode(),
-            headers={**HEADERS, **RELAY_HEADERS, "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp)["access_token"]
-    except Exception as e:  # ponytail: on any login trouble, degrade to anonymous
-        print(f"warn: playtomic login failed, falling back to anonymous: {e}", file=sys.stderr)
-        return None
 
 
 def load_config():
@@ -83,29 +67,21 @@ def court_names(cfg):
     return dict(cfg.get("court_names", {}))
 
 
-def fetch_day(cfg, day, token=None):
+def fetch_day(cfg, day):
     """Return [(resource_id, local_start_datetime, duration_min)] for one day.
 
-    With a token, uses the authenticated API (user_id=me): members see
-    preemption days the public API does not expose yet.
+    Hits the public availability endpoint; PLAYTOMIC_COOKIE, when set, unlocks the
+    member view (further-out days) on the very same endpoint.
     """
-    if token:
-        qs = urllib.parse.urlencode({
-            "tenant_id": cfg["tenant_id"],
-            "sport_id": cfg["sport_id"],
-            "user_id": "me",
-            "local_start_min": f"{day.isoformat()}T00:00:00",
-            "local_start_max": f"{day.isoformat()}T23:59:59",
-        })
-        data = json.loads(http_get(f"{API_BASE}/v1/availability?{qs}",
-                                   {**RELAY_HEADERS, "Authorization": f"Bearer {token}"}))
-    else:
-        qs = urllib.parse.urlencode({
-            "tenant_id": cfg["tenant_id"],
-            "date": day.isoformat(),
-            "sport_id": cfg["sport_id"],
-        })
-        data = json.loads(http_get(f"{PLAYTOMIC_BASE}/api/clubs/availability?{qs}", RELAY_HEADERS))
+    qs = urllib.parse.urlencode({
+        "tenant_id": cfg["tenant_id"],
+        "date": day.isoformat(),
+        "sport_id": cfg["sport_id"],
+    })
+    headers = dict(RELAY_HEADERS)
+    if PLAYTOMIC_COOKIE:
+        headers["Cookie"] = PLAYTOMIC_COOKIE
+    data = json.loads(http_get(f"{PLAYTOMIC_BASE}/api/clubs/availability?{qs}", headers))
     tz = ZoneInfo(cfg["timezone"])
     out = []
     for res in data:
@@ -126,21 +102,15 @@ def collect_matching(cfg):
     """All currently free slots matching windows/courts, keyed for dedup."""
     names = court_names(cfg)
     wanted_courts = set(cfg.get("courts") or [])
-    token = playtomic_login()
     slots = {}
     today = date.today()
     for offset in range(cfg["days_ahead"] + 1):
         day = today + timedelta(days=offset)
         try:
-            day_slots = fetch_day(cfg, day, token)
+            day_slots = fetch_day(cfg, day)
         except Exception as e:
             print(f"warn: fetch failed for {day}: {e}", file=sys.stderr)
-            if not token:
-                continue
-            try:  # authenticated endpoint hiccup: retry the day anonymously
-                day_slots = fetch_day(cfg, day)
-            except Exception:
-                continue
+            continue
         for rid, local_dt, duration in day_slots:
             name = names.get(rid, rid[:8])
             if wanted_courts and name not in wanted_courts:
