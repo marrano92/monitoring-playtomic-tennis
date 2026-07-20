@@ -15,6 +15,9 @@ const path = require('path');
 
 const REFRESH = process.env.PLAYTOMIC_REFRESH_TOKEN;
 const OUT_DIR = process.env.RUNNER_TEMP || require('os').tmpdir();
+// Route the browser through a proxy (Cloudflare WARP SOCKS in CI) so its direct
+// requests egress from a WAF-accepted IP instead of the datacenter runner IP.
+const PROXY = process.env.PLAYTOMIC_PROXY;
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 
 function jwtExp(j) { try { return JSON.parse(Buffer.from(j.split('.')[1], 'base64').toString()).exp; } catch { return null; } }
@@ -26,7 +29,8 @@ function mask(v) { console.log('::add-mask::' + v); } // hide from GitHub Action
   const refExp = jwtExp(REFRESH);
   console.log('input refresh token exp:', refExp, refExp ? '(now=' + Math.floor(Date.now() / 1000) + ', ' + (refExp > Date.now() / 1000 ? 'not expired' : 'EXPIRED') + ')' : '(unparseable)');
 
-  const browser = await chromium.launch({ headless: true });
+  console.log('proxy:', PROXY || 'none');
+  const browser = await chromium.launch({ headless: true, proxy: PROXY ? { server: PROXY } : undefined });
   try {
     const ctx = await browser.newContext({ userAgent: UA, locale: 'it-IT' });
     await ctx.addCookies([{ name: 'pt_auth_refresh_token', value: REFRESH, domain: '.playtomic.com', path: '/', secure: true, sameSite: 'Lax' }]);

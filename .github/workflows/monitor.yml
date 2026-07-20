@@ -45,6 +45,27 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
+      # Playtomic's WAF 403s the datacenter runner IP, so the browser can't reach
+      # the refresh flow directly. Cloudflare WARP (proxy mode) gives the browser a
+      # WAF-accepted egress (same as the Worker relay). Only the browser uses this
+      # proxy; the rest of the job (relay GET, gh, git) stays on the normal network.
+      - name: Route browser via Cloudflare WARP
+        if: env.MEMBER_VIEW == 'true'
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq
+          sudo apt-get install -y cloudflare-warp
+          sudo systemctl start warp-svc || true
+          sleep 5
+          warp-cli --accept-tos registration new || warp-cli --accept-tos register || true
+          warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy || true
+          warp-cli --accept-tos connect || true
+          sleep 8
+          curl -sf -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q 'warp=on' \
+            && echo "WARP proxy up" \
+            || echo "::warning::WARP proxy not confirmed — refresh will likely 403 and fall back to anonymous"
+
       - name: Refresh member session
         id: refresh
         if: env.MEMBER_VIEW == 'true'
@@ -53,6 +74,7 @@ jobs:
         run: node refresh.js
         env:
           PLAYTOMIC_REFRESH_TOKEN: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN }}
+          PLAYTOMIC_PROXY: socks5://127.0.0.1:40000
 
       # Persist the rotated refresh token into the secret (never into git: the repo
       # is public). Needs GH_PAT: a fine-grained PAT with Secrets:write on this repo.
