@@ -1,2 +1,4 @@
 __pycache__/
 .env
+.wrangler/
+relay/.dev.vars

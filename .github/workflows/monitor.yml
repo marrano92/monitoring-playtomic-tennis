@@ -21,6 +21,9 @@ jobs:
       - name: Check availability
         run: python3 monitor.py
         env:
+          # playtomic.com 403s GitHub datacenter IPs; route public GETs via the relay Worker.
+          PLAYTOMIC_BASE: https://playtomic-relay.andrea-marrano921093.workers.dev
+          PLAYTOMIC_RELAY_TOKEN: ${{ secrets.PLAYTOMIC_RELAY_TOKEN }}
           PLAYTOMIC_EMAIL: ${{ secrets.PLAYTOMIC_EMAIL }}
           PLAYTOMIC_PASSWORD: ${{ secrets.PLAYTOMIC_PASSWORD }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}

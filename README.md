@@ -5,10 +5,16 @@ Controlla ogni ~30 minuti la disponibilità dei campi su Playtomic e avvisa via
 nelle fasce orarie che ti interessano. Zero dipendenze Python (solo stdlib,
 Python ≥ 3.9).
 
-Se configuri le credenziali Playtomic (`PLAYTOMIC_EMAIL`/`PLAYTOMIC_PASSWORD`)
-il controllo avviene **da account loggato**: vede anche i giorni in prelazione
-soci non ancora aperti al pubblico. Senza credenziali (o se il login fallisce)
-degrada automaticamente alla vista anonima pubblica.
+Il controllo usa la vista anonima pubblica di `playtomic.com`. La vista soci via
+login (`api.playtomic.io`) è attualmente **non disponibile**: quell'API risponde
+403 a qualunque client non ufficiale, quindi il monitor degrada sempre alla
+vista pubblica (che espone comunque gli stessi slot prenotabili).
+
+> **Perché serve il relay Cloudflare.** Da ~luglio 2026 la CloudFront WAF di
+> Playtomic risponde **403** agli IP datacenter dei runner GitHub. Gli endpoint
+> pubblici funzionano solo da IP residenziali / non-datacenter. Il monitor
+> instrada quindi le due GET pubbliche attraverso un **Cloudflare Worker relay**
+> (`PLAYTOMIC_BASE`), il cui IP egress non è bloccato. Vedi `relay/` e il §4.
 
 ## Cosa monitora (config.json)
 
@@ -67,16 +73,32 @@ Poi in **Settings → Secrets and variables → Actions** aggiungi:
 | `MAIL_TO` | destinatario (opzionale, default = GMAIL_USER) |
 | `TELEGRAM_BOT_TOKEN` | il token del bot da @BotFather |
 | `TELEGRAM_CHAT_ID` | il tuo chat id (vedi sopra) |
-| `PLAYTOMIC_EMAIL` | (opzionale) email account Playtomic per la vista soci |
-| `PLAYTOMIC_PASSWORD` | (opzionale) password Playtomic — inseriscila SOLO qui |
+| `PLAYTOMIC_RELAY_TOKEN` | token condiviso del relay Worker (vedi §4) |
+| `PLAYTOMIC_EMAIL` | (opzionale, oggi inutile) email account Playtomic |
+| `PLAYTOMIC_PASSWORD` | (opzionale, oggi inutile) password Playtomic |
 | `CALLMEBOT_PHONE` | (opzionale) il tuo numero con prefisso, es. `+39333...` |
 | `CALLMEBOT_APIKEY` | (opzionale) la apikey ricevuta da CallMeBot |
 
-Nota sul login Playtomic: il cron a 30 minuti è scelto apposta per tenere basso
-il volume di login automatici (~48/giorno). Non abbassarlo con le credenziali
-configurate: pattern di login più fitti da IP datacenter possono far scattare
-i sistemi anti-bot ed esporre l'account a blocchi (ed è comunque un uso non
-previsto dai ToS di Playtomic).
+### 4. Relay Cloudflare Worker (obbligatorio per GitHub Actions)
+
+Gli IP dei runner GitHub ricevono 403 da Playtomic; il monitor gira solo se le
+richieste passano da un IP non-datacenter. Un Cloudflare Worker (piano gratuito,
+100k richieste/giorno) fa da relay trasparente verso `playtomic.com`.
+
+```bash
+cd relay
+npx wrangler deploy                       # crea il Worker, stampa l'URL *.workers.dev
+npx wrangler secret put RELAY_TOKEN       # incolla un token casuale (es. openssl rand -hex 24)
+```
+
+Poi:
+
+1. Metti l'URL del Worker in `PLAYTOMIC_BASE` nel workflow (`.github/workflows/monitor.yml`).
+2. Aggiungi lo **stesso** token del punto sopra come secret GitHub `PLAYTOMIC_RELAY_TOKEN`.
+
+Il Worker inoltra solo i path `/api/clubs/availability` e `/clubs/` e richiede il
+token via header `X-Relay-Token`, così l'URL pubblico non è un proxy aperto.
+In locale non serve: senza `PLAYTOMIC_BASE` il monitor va diretto a `playtomic.com`.
 
 Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →

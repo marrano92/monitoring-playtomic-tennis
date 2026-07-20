@@ -27,6 +27,12 @@ STATE_FILE = os.path.join(BASE, "state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+# playtomic.com's CloudFront WAF 403s datacenter IPs (GitHub runners); PLAYTOMIC_BASE
+# routes the two public GETs through a Cloudflare Worker relay when set. Booking
+# links stay on playtomic.com (opened from the user's own browser).
+PLAYTOMIC_BASE = os.environ.get("PLAYTOMIC_BASE", "https://playtomic.com").rstrip("/")
+_RELAY_TOKEN = os.environ.get("PLAYTOMIC_RELAY_TOKEN")
+RELAY_HEADERS = {"X-Relay-Token": _RELAY_TOKEN} if _RELAY_TOKEN else {}
 # Court features worth surfacing; "outdoor"/"double" are the norm here, skip them.
 FEATURE_LABELS_IT = {"clay": "terra", "quick": "quick", "hard": "cemento",
                      "grass": "erba", "indoor": "coperto", "single": "singolo"}
@@ -69,7 +75,7 @@ def court_names(cfg):
     from the club page when reachable (GitHub runner IPs get a 403)."""
     names = dict(cfg.get("court_names", {}))
     try:
-        html = http_get(f"https://playtomic.com/clubs/{cfg['club_slug']}")
+        html = http_get(f"{PLAYTOMIC_BASE}/clubs/{cfg['club_slug']}", RELAY_HEADERS)
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
             html, re.S)
@@ -104,7 +110,7 @@ def fetch_day(cfg, day, token=None):
             "date": day.isoformat(),
             "sport_id": cfg["sport_id"],
         })
-        data = json.loads(http_get(f"https://playtomic.com/api/clubs/availability?{qs}"))
+        data = json.loads(http_get(f"{PLAYTOMIC_BASE}/api/clubs/availability?{qs}", RELAY_HEADERS))
     tz = ZoneInfo(cfg["timezone"])
     out = []
     for res in data:
