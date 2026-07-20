@@ -15,6 +15,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # `secrets` can't be referenced in a step `if:`; expose its presence as an
+      # env flag ("true"/"false") — the env context IS allowed in `if:`.
+      MEMBER_VIEW: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -23,19 +27,19 @@ jobs:
       # HTTP clients / the relay can't execute. Playtomic rotates the refresh token
       # on use, so we capture the new one and persist it back into the secret.
       - uses: actions/setup-node@v4
-        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
+        if: env.MEMBER_VIEW == 'true'
         with:
           node-version: 20
 
       - name: Cache Playwright browser
-        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
+        if: env.MEMBER_VIEW == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('auth/package.json') }}
 
       - name: Install auth deps
-        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
+        if: env.MEMBER_VIEW == 'true'
         working-directory: auth
         run: |
           npm install --no-audit --no-fund
@@ -43,7 +47,7 @@ jobs:
 
       - name: Refresh member session
         id: refresh
-        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
+        if: env.MEMBER_VIEW == 'true'
         continue-on-error: true
         working-directory: auth
         run: node refresh.js
