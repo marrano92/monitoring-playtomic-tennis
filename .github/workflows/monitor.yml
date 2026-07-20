@@ -23,16 +23,19 @@ jobs:
       # HTTP clients / the relay can't execute. Playtomic rotates the refresh token
       # on use, so we capture the new one and persist it back into the secret.
       - uses: actions/setup-node@v4
+        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
         with:
           node-version: 20
 
       - name: Cache Playwright browser
+        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('auth/package.json') }}
 
       - name: Install auth deps
+        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
         working-directory: auth
         run: |
           npm install --no-audit --no-fund
@@ -40,6 +43,7 @@ jobs:
 
       - name: Refresh member session
         id: refresh
+        if: ${{ secrets.PLAYTOMIC_REFRESH_TOKEN != '' }}
         continue-on-error: true
         working-directory: auth
         run: node refresh.js
