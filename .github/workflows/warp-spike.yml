@@ -1,0 +1,44 @@
+name: warp-spike
+
+# Throwaway: does routing the runner through Cloudflare WARP (proxy mode) make
+# Playtomic's WAF accept the request (as it accepts the Worker relay's egress)?
+# 403 via WARP => WARP won't help; 200/307 => wire the headless browser through it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cloudflare-warp
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq
+          sudo apt-get install -y cloudflare-warp
+          warp-cli --version || true
+
+      - name: Connect WARP in proxy mode
+        run: |
+          sudo systemctl start warp-svc || true
+          sleep 5
+          warp-cli --accept-tos registration new || warp-cli --accept-tos register || true
+          warp-cli --accept-tos mode proxy || warp-cli --accept-tos set-mode proxy || true
+          warp-cli --accept-tos connect || true
+          sleep 10
+          warp-cli status || true
+          echo "=== trace via WARP proxy (want warp=on + a Cloudflare egress ip) ==="
+          curl -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'warp=|ip=' || echo "proxy trace FAILED"
+
+      - name: Probe Playtomic through WARP
+        run: |
+          A="tenant_id=5440b3ab-1500-4d62-8c9b-6a8b96949501&date=2026-07-21&sport_id=TENNIS"
+          echo "baseline availability (no proxy, datacenter IP):"
+          curl -s -o /dev/null -w "  status=%{http_code}\n" "https://playtomic.com/api/clubs/availability?$A" || true
+          echo "availability via WARP proxy (200 = WARP egress passes the WAF):"
+          curl -s -o /dev/null -w "  status=%{http_code}\n" -x socks5h://127.0.0.1:40000 "https://playtomic.com/api/clubs/availability?$A" || true
+          echo "refresh route via WARP proxy (307 = passes, 403 = still blocked):"
+          curl -s -o /dev/null -w "  status=%{http_code}\n" -x socks5h://127.0.0.1:40000 "https://playtomic.com/api/web-app/refresh?return_url=https%3A%2F%2Fplaytomic.com%2F" || true
