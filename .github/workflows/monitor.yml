@@ -54,15 +54,18 @@ jobs:
       # is public). Needs GH_PAT: a fine-grained PAT with Secrets:write on this repo.
       - name: Persist rotated refresh token
         if: steps.refresh.outcome == 'success'
+        continue-on-error: true  # persistence trouble must never block the monitor
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          if [ -f "$RUNNER_TEMP/pt_refresh" ]; then
-            gh secret set PLAYTOMIC_REFRESH_TOKEN --body "$(cat "$RUNNER_TEMP/pt_refresh")"
-            echo "rotated refresh token persisted"
-          else
-            echo "no new refresh token captured this run"
+          if [ ! -f "$RUNNER_TEMP/pt_refresh" ]; then
+            echo "no new refresh token captured this run"; exit 0
           fi
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::GH_PAT not set — cannot persist the rotated refresh token; the member session will break next run. Add GH_PAT (fine-grained PAT, Secrets:write) or re-paste PLAYTOMIC_REFRESH_TOKEN."
+            exit 0
+          fi
+          gh secret set PLAYTOMIC_REFRESH_TOKEN --body "$(cat "$RUNNER_TEMP/pt_refresh")" && echo "rotated refresh token persisted"
 
       - name: Check availability
         run: |
