@@ -23,6 +23,8 @@ function mask(v) { console.log('::add-mask::' + v); } // hide from GitHub Action
 (async () => {
   if (!REFRESH) { console.error('PLAYTOMIC_REFRESH_TOKEN not set'); process.exit(2); }
   mask(REFRESH);
+  const refExp = jwtExp(REFRESH);
+  console.log('input refresh token exp:', refExp, refExp ? '(now=' + Math.floor(Date.now() / 1000) + ', ' + (refExp > Date.now() / 1000 ? 'not expired' : 'EXPIRED') + ')' : '(unparseable)');
 
   const browser = await chromium.launch({ headless: true });
   try {
@@ -30,10 +32,16 @@ function mask(v) { console.log('::add-mask::' + v); } // hide from GitHub Action
     await ctx.addCookies([{ name: 'pt_auth_refresh_token', value: REFRESH, domain: '.playtomic.com', path: '/', secure: true, sameSite: 'Lax' }]);
     const page = await ctx.newPage();
 
-    // Navigating this route lands on app.playtomic.com/refresh, whose JS mints a
-    // fresh access token (and rotates the refresh token) from the refresh cookie.
-    await page.goto('https://playtomic.com/api/web-app/refresh?return_url=' + encodeURIComponent('https://playtomic.com/'),
+    // Diagnostics: record playtomic responses + detect a WAF/block page.
+    const seen = [];
+    page.on('response', (r) => { const u = r.url(); if (u.includes('playtomic.com')) seen.push(r.status() + ' ' + u.split('?')[0].replace('https://', '').slice(0, 60)); });
+
+    const resp = await page.goto('https://playtomic.com/api/web-app/refresh?return_url=' + encodeURIComponent('https://playtomic.com/'),
       { waitUntil: 'networkidle', timeout: 60000 });
+    console.log('nav status:', resp && resp.status(), '-> final:', page.url().split('?')[0]);
+    const html = await page.content().catch(() => '');
+    const blocked = /Request blocked|403 ERROR|could not be satisfied|Access Denied|captcha|challenge|Just a moment/i.test(html);
+    console.log('block/challenge page detected:', blocked, '| title:', (await page.title().catch(() => '')).slice(0, 60));
 
     // Poll until the access cookie is present and unexpired (JS refresh is async).
     let acc = null, ref = null;
@@ -50,7 +58,9 @@ function mask(v) { console.log('::add-mask::' + v); } // hide from GitHub Action
 
     const exp = acc && jwtExp(acc.value);
     if (!exp || exp <= Math.floor(Date.now() / 1000) + 60) {
-      console.error('refresh failed: no fresh access token (token invalid/rotated, or flow changed)');
+      console.error('refresh failed: no fresh access token (token invalid/rotated, WAF block, or flow changed)');
+      console.log('diag: playtomic responses =', JSON.stringify(seen.slice(0, 20)));
+      console.log('diag: cookies present =', JSON.stringify((await ctx.cookies()).map(c => c.name)));
       process.exit(1);
     }
 
@@ -59,7 +69,6 @@ function mask(v) { console.log('::add-mask::' + v); } // hide from GitHub Action
       fs.writeFileSync(path.join(OUT_DIR, 'pt_refresh'), ref.value, { mode: 0o600 });
       console.log('ok: access refreshed (exp ' + exp + '), NEW refresh token captured -> persist it');
     } else {
-      // No new refresh token surfaced: the chain can't continue past this run.
       console.error('warn: access refreshed but NO new refresh token cookie found — chain will break next run');
       console.log('ok: access refreshed (exp ' + exp + ') but refresh token NOT rotated in cookies');
     }
