@@ -13,7 +13,6 @@ Usage:
 import html
 import json
 import os
-import re
 import smtplib
 import sys
 import urllib.parse
@@ -27,15 +26,18 @@ STATE_FILE = os.path.join(BASE, "state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-# playtomic.com's CloudFront WAF 403s datacenter IPs (GitHub runners); PLAYTOMIC_BASE
-# routes the two public GETs through a Cloudflare Worker relay when set. Booking
-# links stay on playtomic.com (opened from the user's own browser).
-PLAYTOMIC_BASE = os.environ.get("PLAYTOMIC_BASE", "https://playtomic.com").rstrip("/")
+# Playtomic's CloudFront WAF 403s datacenter IPs (GitHub runners) and even plain
+# non-browser clients; PLAYTOMIC_BASE routes requests through a Cloudflare Worker
+# relay (its egress clears the WAF) when set. Booking links stay on playtomic.com
+# (opened from the user's own browser).
+_DEFAULT_BASE = "https://playtomic.com"
+PLAYTOMIC_BASE = os.environ.get("PLAYTOMIC_BASE", _DEFAULT_BASE).rstrip("/")
 _RELAY_TOKEN = os.environ.get("PLAYTOMIC_RELAY_TOKEN")
 RELAY_HEADERS = {"X-Relay-Token": _RELAY_TOKEN} if _RELAY_TOKEN else {}
-# Court features worth surfacing; "outdoor"/"double" are the norm here, skip them.
-FEATURE_LABELS_IT = {"clay": "terra", "quick": "quick", "hard": "cemento",
-                     "grass": "erba", "indoor": "coperto", "single": "singolo"}
+# Auth + member availability live on api.playtomic.io. When the relay is
+# configured it proxies that host too (same path prefixes), so route through
+# PLAYTOMIC_BASE; otherwise (local dev) hit api.playtomic.io directly.
+API_BASE = PLAYTOMIC_BASE if PLAYTOMIC_BASE != _DEFAULT_BASE else "https://api.playtomic.io"
 
 
 def http_get(url, extra_headers=None):
@@ -55,9 +57,9 @@ def playtomic_login():
         return None
     try:
         req = urllib.request.Request(
-            "https://api.playtomic.io/v3/auth/login",
+            f"{API_BASE}/v3/auth/login",
             data=json.dumps({"email": email, "password": password}).encode(),
-            headers={**HEADERS, "Content-Type": "application/json"})
+            headers={**HEADERS, **RELAY_HEADERS, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.load(resp)["access_token"]
     except Exception as e:  # ponytail: on any login trouble, degrade to anonymous
@@ -71,21 +73,14 @@ def load_config():
 
 
 def court_names(cfg):
-    """Map resource_id -> court name: static map from config, refreshed live
-    from the club page when reachable (GitHub runner IPs get a 403)."""
-    names = dict(cfg.get("court_names", {}))
-    try:
-        html = http_get(f"{PLAYTOMIC_BASE}/clubs/{cfg['club_slug']}", RELAY_HEADERS)
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html, re.S)
-        resources = json.loads(m.group(1))["props"]["pageProps"]["tenant"]["resources"]
-        for r in resources:
-            tags = [FEATURE_LABELS_IT[f] for f in r.get("features", []) if f in FEATURE_LABELS_IT]
-            names[r["resourceId"]] = r["name"].strip() + (f" ({', '.join(tags)})" if tags else "")
-    except Exception as e:  # ponytail: names are cosmetic, static map covers it
-        print(f"warn: could not refresh court names: {e}", file=sys.stderr)
-    return names
+    """resource_id -> court name, from the static map in config.json.
+
+    A live refresh from the club HTML page used to run here, but playtomic.com's
+    CloudFront WAF 403s that page (even through the relay), so it only produced
+    noise. The static map is complete; unknown ids degrade to rid[:8] in
+    collect_matching. Add a new court to config.json when the club adds one.
+    """
+    return dict(cfg.get("court_names", {}))
 
 
 def fetch_day(cfg, day, token=None):
@@ -102,8 +97,8 @@ def fetch_day(cfg, day, token=None):
             "local_start_min": f"{day.isoformat()}T00:00:00",
             "local_start_max": f"{day.isoformat()}T23:59:59",
         })
-        data = json.loads(http_get(f"https://api.playtomic.io/v1/availability?{qs}",
-                                   {"Authorization": f"Bearer {token}"}))
+        data = json.loads(http_get(f"{API_BASE}/v1/availability?{qs}",
+                                   {**RELAY_HEADERS, "Authorization": f"Bearer {token}"}))
     else:
         qs = urllib.parse.urlencode({
             "tenant_id": cfg["tenant_id"],
