@@ -106,13 +106,8 @@ jobs:
           PLAYTOMIC_BASE: https://playtomic-relay.andrea-marrano921093.workers.dev
           PLAYTOMIC_RELAY_TOKEN: ${{ secrets.PLAYTOMIC_RELAY_TOKEN }}
           PLAYTOMIC_COOKIE: ${{ secrets.PLAYTOMIC_COOKIE }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
-          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
 
       - name: Persist state
         run: |

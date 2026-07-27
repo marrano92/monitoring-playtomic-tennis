@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Playtomic slot monitor.
 
-Polls the public availability API of a Playtomic club and sends an email +
-WhatsApp (CallMeBot) notification when a slot matching the watch windows in
-config.json becomes available.
+Polls the public availability API of a Playtomic club and sends a Telegram
+notification when a slot matching the watch windows in config.json becomes
+available.
 
 Usage:
     python3 monitor.py             # check and notify
@@ -13,18 +13,17 @@ Usage:
 import html
 import json
 import os
-import smtplib
+import re
 import sys
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
-from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "state.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-DAY_LABELS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
+DAY_NAMES_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 # playtomic.com's CloudFront WAF 403s datacenter IPs (GitHub runners) and even
 # plain non-browser clients; PLAYTOMIC_BASE routes the availability GET through a
@@ -122,57 +121,80 @@ def collect_matching(cfg):
     return slots
 
 
-def format_lines(slots):
-    ordered = sorted(slots.values(), key=lambda s: (s[1], s[0]))
-    return [
-        f"{name} — {DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m %H:%M')} ({duration} min)"
-        for name, dt, duration in ordered
-    ]
+def court_parts(name):
+    """'Campo 5 (terra)' -> ('Campo 5', 'terra'); no parenthesis -> (name, '')."""
+    base, _, surface = name.partition(" (")
+    return base.strip(), surface.rstrip(")").strip()
 
 
-def send_email(cfg, lines, first_date):
-    user = os.environ.get("GMAIL_USER")
-    pwd = os.environ.get("GMAIL_APP_PASSWORD")
-    if not (user and pwd):
-        print("warn: GMAIL_USER/GMAIL_APP_PASSWORD not set, skipping email", file=sys.stderr)
-        return
-    link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={first_date}"
-    msg = EmailMessage()
-    msg["Subject"] = f"Slot liberi: {cfg['club_name']} ({len(lines)})"
-    msg["From"] = user
-    msg["To"] = os.environ.get("MAIL_TO", user)
-    msg.set_content("Nuovi slot disponibili:\n\n" + "\n".join(lines) + f"\n\nPrenota: {link}")
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, pwd)
-        smtp.send_message(msg)
-    print(f"email sent to {msg['To']}")
+def court_sort_key(name):
+    """Natural-ish order: Campo 1, Campo 2, Campo 10 — not 1, 10, 2."""
+    m = re.search(r"\d+", name)
+    return (int(m.group()) if m else 999, name)
 
 
-def format_telegram(cfg, slots, link, max_lines=30):
-    """HTML message grouped by day: bold hour, court name with surface info."""
-    ordered = sorted(slots.values(), key=lambda s: (s[1], s[0]))
-    dropped = max(0, len(ordered) - max_lines)
-    parts = [f"🎾 <b>{html.escape(cfg['club_name'])}</b> — nuovi slot liberi"]
-    last_day = None
-    for name, dt, duration in ordered[:max_lines]:
-        if dt.date() != last_day:
-            last_day = dt.date()
-            parts.append(f"\n📅 <b>{DAY_LABELS_IT[dt.weekday()]} {dt.strftime('%d/%m')}</b>")
-        parts.append(f"    <b>{dt.strftime('%H:%M')}</b> · {html.escape(name)} — {duration} min")
-    if dropped:
-        parts.append(f"\n… e altri {dropped} slot")
-    parts.append(f'\n<a href="{link}">👉 Prenota su Playtomic</a>')
-    return "\n".join(parts)
+def courts_label(names):
+    """Courts of one time slot on a single line, shared surface factored out."""
+    ordered = sorted(names, key=court_sort_key)
+    parts = [court_parts(n) for n in ordered]
+    surfaces = {s for _, s in parts}
+    if len(surfaces) == 1 and "" not in surfaces:
+        joined = ", ".join(html.escape(b) for b, _ in parts)
+        return f"{joined} <i>({html.escape(surfaces.pop())})</i>"
+    return ", ".join(html.escape(n) for n in ordered)
 
 
-def send_telegram(cfg, slots, first_date):
+def group_by_day(slots):
+    """[(date, [((hh:mm, duration), [court, ...]), ...]), ...], chronological."""
+    days = {}
+    for name, dt, duration in slots.values():
+        times = days.setdefault(dt.date(), {})
+        times.setdefault((dt.strftime("%H:%M"), duration), []).append(name)
+    return [(day, sorted(times.items())) for day, times in sorted(days.items())]
+
+
+def format_telegram(cfg, slots, max_chars=3800):
+    """HTML message grouped by day and start time.
+
+    One line per start time (courts collapsed onto it) instead of one per slot:
+    a batch of 40 free slots reads as a handful of lines. Each day header links
+    to that day on Playtomic. The tail is trimmed to stay under Telegram's
+    4096-char cap.
+    """
+    days = group_by_day(slots)
+    head = (f"🎾 <b>{html.escape(cfg['club_name'])}</b>\n"
+            f"<i>{len(slots)} slot liberi · {len(days)} giorn{'o' if len(days) == 1 else 'i'}</i>")
+    entries = []  # (line, slots on that line); day headers count 0
+    for day, times in days:
+        link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={day.isoformat()}"
+        label = f"{DAY_NAMES_IT[day.weekday()]} {day.strftime('%d/%m')}"
+        entries.append((f"\n📅 <b>{label}</b> · <a href=\"{link}\">prenota</a>", 0))
+        for (hhmm, duration), courts in times:
+            entries.append((f"    <b>{hhmm}</b> · {duration} min · {courts_label(courts)}",
+                            len(courts)))
+
+    def render(n):
+        text = "\n".join([head] + [line for line, _ in entries[:n]])
+        dropped = sum(c for _, c in entries[n:])
+        return (text + f"\n\n… e altri {dropped} slot") if dropped else text
+
+    # ponytail: re-render per dropped line, O(n²) on a list of at most a few
+    # hundred entries. Bisect if a club ever frees thousands of slots at once.
+    n = len(entries)
+    while n > 1 and len(render(n)) > max_chars:
+        n -= 1
+    while n > 1 and entries[n - 1][1] == 0:  # never end on a dangling day header
+        n -= 1
+    return render(n)
+
+
+def send_telegram(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not (token and chat_id):
-        print("warn: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set, skipping Telegram", file=sys.stderr)
-        return
-    link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={first_date}"
-    text = format_telegram(cfg, slots, link)
+        # Sole notification channel: failing loudly keeps state.json unwritten, so
+        # the slots are re-notified next run instead of being silently swallowed.
+        sys.exit("error: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": text,
                                    "parse_mode": "HTML",
                                    "disable_web_page_preview": "true"}).encode()
@@ -181,23 +203,6 @@ def send_telegram(cfg, slots, first_date):
     with urllib.request.urlopen(req, timeout=30):
         pass
     print("telegram sent")
-
-
-def send_whatsapp(cfg, lines, first_date):
-    phone = os.environ.get("CALLMEBOT_PHONE")
-    apikey = os.environ.get("CALLMEBOT_APIKEY")
-    if not (phone and apikey):
-        print("warn: CALLMEBOT_PHONE/CALLMEBOT_APIKEY not set, skipping WhatsApp", file=sys.stderr)
-        return
-    link = f"https://playtomic.com/clubs/{cfg['club_slug']}?date={first_date}"
-    text = f"🎾 {cfg['club_name']} — nuovi slot:\n" + "\n".join(lines[:15])
-    if len(lines) > 15:
-        text += f"\n… e altri {len(lines) - 15}"
-    text += f"\n{link}"
-    url = ("https://api.callmebot.com/whatsapp.php?"
-           + urllib.parse.urlencode({"phone": phone, "text": text, "apikey": apikey}))
-    http_get(url)
-    print(f"whatsapp sent to {phone}")
 
 
 def load_state():
@@ -217,16 +222,11 @@ def main():
     print(f"{len(current)} matching slot(s) free, {len(new_keys)} new")
 
     if new_keys:
-        new_slots = {k: current[k] for k in new_keys}
-        lines = format_lines(new_slots)
-        first_date = min(s[1] for s in new_slots.values()).date().isoformat()
+        message = format_telegram(cfg, {k: current[k] for k in new_keys})
         if dry_run:
-            print("dry-run, would notify:")
-            print("\n".join(lines))
+            print("dry-run, would send:\n" + message)
         else:
-            send_email(cfg, lines, first_date)
-            send_telegram(cfg, new_slots, first_date)
-            send_whatsapp(cfg, lines, first_date)
+            send_telegram(message)
 
     if not dry_run:
         # State = currently free matching slots: a slot that gets booked and
@@ -252,16 +252,35 @@ def selftest():
     # UTC -> Rome conversion: 16:30 UTC in July = 18:30 local (DST)
     utc = datetime.fromisoformat("2026-07-06T16:30:00+00:00")
     assert in_window(utc.astimezone(tz), windows)
-    # Telegram formatting: slots on two days -> two day headers, court info kept
+    # Telegram formatting: two days -> two headers; courts sharing a start time
+    # and a surface collapse onto one line, in natural court order.
     cfg = {"club_name": "Club Test", "club_slug": "club-test"}
     slots = {
-        "a": ("Campo 1 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
-        "b": ("Campo 2E (quick, singolo)", datetime(2026, 7, 7, 7, 0, tzinfo=tz), 60),
+        "a": ("Campo 10 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
+        "b": ("Campo 2 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
+        "c": ("Campo 2E (quick, singolo)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 90),
+        "d": ("Campo 3 (terra)", datetime(2026, 7, 7, 7, 0, tzinfo=tz), 60),
     }
-    msg = format_telegram(cfg, slots, "https://example.com")
-    assert msg.count("📅") == 2
-    assert "Campo 2E (quick, singolo)" in msg and "<b>07:00</b>" in msg
-    assert "EUR" not in msg and 'href="https://example.com"' in msg
+    msg = format_telegram(cfg, slots)
+    assert msg.count("📅") == 2, msg
+    assert "4 slot liberi · 2 giorni" in msg
+    assert "Campo 2, Campo 10 <i>(terra)</i>" in msg          # collapsed + natural order
+    assert "<b>18:30</b> · 90 min · Campo 2E <i>(quick, singolo)</i>" in msg
+    assert 'href="https://playtomic.com/clubs/club-test?date=2026-07-07"' in msg
+    assert msg.count("18:30") == 2 and "… e altri" not in msg  # two durations, no trim
+    # Mixed surfaces on the same line keep each court's own label
+    mixed = format_telegram(cfg, {
+        "a": ("Campo 1 (terra)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
+        "b": ("Campo 1E (quick)", datetime(2026, 7, 6, 18, 30, tzinfo=tz), 60),
+    })
+    assert "Campo 1 (terra), Campo 1E (quick)" in mixed
+    # Oversized batch: trimmed under the cap, remainder counted, no dangling header
+    big = {f"k{i}": (f"Campo {i % 12 + 1} (terra)",
+                     datetime(2026, 7, 6 + i % 5, 7 + i % 12, 0, tzinfo=tz), 60)
+           for i in range(400)}
+    trimmed = format_telegram(cfg, big, max_chars=600)
+    assert len(trimmed) <= 700 and "… e altri" in trimmed, len(trimmed)
+    assert not trimmed.split("\n… e altri")[0].rstrip().endswith("prenota</a>")
     print("selftest ok")
 
 

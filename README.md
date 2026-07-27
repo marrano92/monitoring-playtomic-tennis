@@ -1,21 +1,20 @@
 # Monitoring Playtomic — Club Ambrosiano Tennis
 
-Controlla ogni ~30 minuti la disponibilità dei campi su Playtomic e avvisa via
-**email**, **Telegram** e opzionalmente **WhatsApp** quando si libera uno slot
-nelle fasce orarie che ti interessano. Zero dipendenze Python (solo stdlib,
-Python ≥ 3.9).
+Controlla ogni ~30 minuti la disponibilità dei campi su Playtomic e avvisa su
+**Telegram** quando si libera uno slot nelle fasce orarie che ti interessano.
+Zero dipendenze Python (solo stdlib, Python ≥ 3.9).
 
 Il controllo usa la vista pubblica di `playtomic.com`, che espone solo i prossimi
 **~3 giorni**. Con una sessione **soci** (cookie `pt_auth_access_token`) lo stesso
 endpoint restituisce **~10 giorni**: il monitor la ottiene rinnovando il token in
-un **browser headless** ad ogni run (vedi §5, opzionale). Senza sessione soci
+un **browser headless** ad ogni run (vedi §4, opzionale). Senza sessione soci
 degrada in automatico alla vista pubblica, senza errori.
 
 > **Perché serve il relay Cloudflare.** Da ~luglio 2026 la CloudFront WAF di
 > Playtomic risponde **403** agli IP datacenter dei runner GitHub. Gli endpoint
 > pubblici funzionano solo da IP residenziali / non-datacenter. Il monitor
 > instrada quindi la GET di disponibilità attraverso un **Cloudflare Worker relay**
-> (`PLAYTOMIC_BASE`), il cui IP egress non è bloccato. Vedi `relay/` e il §4.
+> (`PLAYTOMIC_BASE`), il cui IP egress non è bloccato. Vedi `relay/` e il §3.
 
 ## Cosa monitora (config.json)
 
@@ -26,6 +25,29 @@ degrada in automatico alla vista pubblica, senza errori.
   - lun–ven 18:00–21:00
   - sab–dom 09:00–12:00
   - tutti i giorni 07:00–09:00
+
+## Com'è fatta la notifica
+
+Un solo messaggio Telegram, raggruppato per **giorno → orario di inizio**: i campi
+liberi alla stessa ora finiscono sulla stessa riga (con la superficie in comune
+scritta una volta sola), così anche 40 slot restano poche righe. L'intestazione di
+ogni giorno è un link diretto a quel giorno su Playtomic.
+
+```
+🎾 Club Ambrosiano Tennis
+9 slot liberi · 3 giorni
+
+📅 lunedì 27/07 · prenota
+    18:30 · 60 min · Campo 1, Campo 2 (terra)
+    18:30 · 90 min · Campo 3 (terra)
+    19:00 · 60 min · Campo 5 (terra)
+
+📅 martedì 28/07 · prenota
+    09:00 · 60 min · Campo 7, Campo 8 (terra)
+```
+
+Se il messaggio supera il limite di Telegram (4096 caratteri) la coda viene
+troncata e sostituita da `… e altri N slot`.
 
 ## Setup (una tantum)
 
@@ -40,25 +62,11 @@ degrada in automatico alla vista pubblica, senza errori.
    ```
    Il numero in `"id"` è il tuo `TELEGRAM_CHAT_ID`.
 
-### 1-bis. (Opzionale) WhatsApp via CallMeBot
+Telegram è l'**unico** canale: se `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` mancano
+il run fallisce di proposito senza scrivere lo stato, così gli slot vengono
+rinotificati al giro dopo invece di sparire in silenzio.
 
-1. Aggiungi ai contatti il numero **+34 611 01 16 37** (nome a piacere; numero
-   aggiornato su [callmebot.com](https://www.callmebot.com/blog/free-api-whatsapp-messages/))
-2. Mandagli su WhatsApp il messaggio: `I allow callmebot to send me messages`
-3. Ricevi in risposta `API Activated for your phone number. Your APIKEY is …`
-   (se non arriva entro 2 minuti, riprova dopo 24h)
-
-Ogni canale è indipendente: se i suoi secrets mancano viene saltato con un
-warning, gli altri funzionano comunque.
-
-### 2. Gmail app password
-
-1. Vai su [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-   (serve la verifica in 2 passaggi attiva)
-2. Crea una password per l'app (nome libero, es. "playtomic monitor")
-3. Conserva la password di 16 caratteri generata
-
-### 3. Repo GitHub e secrets
+### 2. Repo GitHub e secrets
 
 ```bash
 git init && git add -A && git commit -m "feat: playtomic slot monitor"
@@ -69,19 +77,14 @@ Poi in **Settings → Secrets and variables → Actions** aggiungi:
 
 | Secret | Valore |
 |---|---|
-| `GMAIL_USER` | il tuo indirizzo Gmail |
-| `GMAIL_APP_PASSWORD` | la app password di 16 caratteri |
-| `MAIL_TO` | destinatario (opzionale, default = GMAIL_USER) |
 | `TELEGRAM_BOT_TOKEN` | il token del bot da @BotFather |
 | `TELEGRAM_CHAT_ID` | il tuo chat id (vedi sopra) |
-| `PLAYTOMIC_RELAY_TOKEN` | token condiviso del relay Worker (vedi §4) |
-| `PLAYTOMIC_REFRESH_TOKEN` | (opzionale, vista soci) refresh token della sessione — vedi §5 |
-| `GH_PAT` | (solo con §5) PAT fine-grained con *Secrets: write* su questo repo — vedi §5 |
+| `PLAYTOMIC_RELAY_TOKEN` | token condiviso del relay Worker (vedi §3) |
+| `PLAYTOMIC_REFRESH_TOKEN` | (opzionale, vista soci) refresh token della sessione — vedi §4 |
+| `GH_PAT` | (solo con §4) PAT fine-grained con *Secrets: write* su questo repo — vedi §4 |
 | `PLAYTOMIC_COOKIE` | (opzionale) cookie soci manuale `pt_auth_access_token=…`, fallback della vista soci |
-| `CALLMEBOT_PHONE` | (opzionale) il tuo numero con prefisso, es. `+39333...` |
-| `CALLMEBOT_APIKEY` | (opzionale) la apikey ricevuta da CallMeBot |
 
-### 4. Relay Cloudflare Worker (obbligatorio per GitHub Actions)
+### 3. Relay Cloudflare Worker (obbligatorio per GitHub Actions)
 
 Gli IP dei runner GitHub ricevono 403 da Playtomic; il monitor gira solo se le
 richieste passano da un IP non-datacenter. Un Cloudflare Worker (piano gratuito,
@@ -107,7 +110,7 @@ Il workflow parte da solo ogni ~30 minuti (i cron di GitHub possono ritardare
 di qualche minuto). Per un test immediato: tab **Actions → playtomic-monitor →
 Run workflow**.
 
-### 5. (Opzionale) Vista soci: refresh headless del token
+### 4. (Opzionale) Vista soci: refresh headless del token
 
 La vista pubblica mostra ~3 giorni; quella soci ~10. Per attivarla il workflow
 rinnova il token di sessione in un **Chromium headless** (Playwright) ad ogni run
